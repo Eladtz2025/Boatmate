@@ -35,9 +35,10 @@ declare
   v_a     uuid := '11111111-1111-1111-1111-111111111111';
   v_b     uuid := '22222222-2222-2222-2222-222222222222';
   v_c     uuid := '33333333-3333-3333-3333-333333333333';
-  v_id    uuid;
-  v_total bigint;
-  v_count int;
+  v_id     uuid;
+  v_total  bigint;
+  v_count  int;
+  v_status text;
 begin
   ---------------------------------------------------------------- TEST 1
   begin
@@ -165,6 +166,23 @@ begin
     raise exception 'TEST 10 FAILED — % public tables have RLS disabled', v_count;
   end if;
   raise notice 'TEST 10 PASS — RLS enabled on every public table';
+
+  ---------------------------------------------------------------- TEST 11
+  -- Deleting a confirmed payment must put its occurrence back in the pending
+  -- list. This used to fail outright: `on delete set null` nulled expense_id
+  -- under a 'paid' row and tripped recurring_occurrence_paid_has_expense, so a
+  -- payment confirmed by mistake could not be undone at all.
+  delete from public.expenses
+   where id = (select expense_id from public.recurring_occurrences
+                where id = 'dddddddd-0000-0000-0000-000000000001');
+
+  select status into v_status from public.recurring_occurrences
+   where id = 'dddddddd-0000-0000-0000-000000000001';
+
+  if v_status <> 'pending' then
+    raise exception 'TEST 11 FAILED — occurrence is %, expected pending', v_status;
+  end if;
+  raise notice 'TEST 11 PASS — deleting a confirmed payment un-confirms it';
 
   raise notice '=== ALL INVARIANTS HOLD ===';
 end;
