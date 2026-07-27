@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Plane, UserPlus, X } from "lucide-react";
-import { addPartnerByEmail, removePartner } from "@/app/actions";
+import { Check, Pencil, Plane, UserPlus, X } from "lucide-react";
+import { addPartnerByEmail, removePartner, updatePartner } from "@/app/actions";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { TextInput } from "@/components/ui/field";
@@ -24,6 +24,11 @@ export function CrewManager({
   const [isRemote, setIsRemote] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+
+  // userId of the row being renamed, or null.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editRemote, setEditRemote] = useState(false);
 
   function add() {
     setError(null);
@@ -53,34 +58,101 @@ export function CrewManager({
     });
   }
 
+  function startEdit(member: Member) {
+    setEditing(member.userId);
+    setEditName(member.name);
+    setEditRemote(member.isRemote);
+    setError(null);
+  }
+
+  function saveEdit(userId: string) {
+    setError(null);
+    startTransition(async () => {
+      const result = await updatePartner({
+        boatId,
+        userId,
+        displayName: editName,
+        isRemote: editRemote,
+      });
+      if (result.ok) setEditing(null);
+      else setError(result.error);
+    });
+  }
+
   return (
     <div className="space-y-3">
       <ul className="space-y-2">
-        {members.map((member) => (
-          <li key={member.userId} className="flex items-center gap-3">
-            <Avatar name={member.name} color={member.color} size="sm" />
-            <span className="flex-1 truncate text-sm">
-              {member.name}
-              {member.userId === currentUserId && (
-                <span className="ms-1.5 text-xs text-ink-subtle">(אני)</span>
+        {members.map((member) =>
+          editing === member.userId ? (
+            <li
+              key={member.userId}
+              className="space-y-3 rounded-2xl border border-[var(--hairline)] p-3"
+            >
+              <TextInput
+                label="שם תצוגה"
+                value={editName}
+                onChange={(event) => setEditName(event.target.value)}
+                placeholder={member.name}
+              />
+              <label className="flex items-center gap-2 text-sm text-ink-muted">
+                <input
+                  type="checkbox"
+                  checked={editRemote}
+                  onChange={(event) => setEditRemote(event.target.checked)}
+                  className="size-4 accent-[var(--color-teal-400)]"
+                />
+                שותף שמגיע מחו״ל
+              </label>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => saveEdit(member.userId)}
+                  loading={pending}
+                  disabled={!editName.trim()}
+                  size="sm"
+                  icon={<Check className="size-4" aria-hidden />}
+                >
+                  שמירה
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setEditing(null)}>
+                  ביטול
+                </Button>
+              </div>
+            </li>
+          ) : (
+            <li key={member.userId} className="flex items-center gap-3">
+              <Avatar name={member.name} color={member.color} size="sm" />
+              <span className="flex-1 truncate text-sm">
+                {member.name}
+                {member.userId === currentUserId && (
+                  <span className="ms-1.5 text-xs text-ink-subtle">(אני)</span>
+                )}
+              </span>
+              {member.isRemote && (
+                <Plane className="size-4 text-teal-400/70" aria-label="שותף מרוחק" />
               )}
-            </span>
-            {member.isRemote && (
-              <Plane className="size-4 text-teal-400/70" aria-label="שותף מרוחק" />
-            )}
-            {member.userId !== currentUserId && (
               <button
                 type="button"
-                onClick={() => remove(member.userId)}
+                onClick={() => startEdit(member)}
                 disabled={pending}
-                aria-label={`הסרת ${member.name}`}
-                className="rounded-full p-1 text-ink-subtle transition hover:bg-hull-750 hover:text-danger disabled:opacity-50"
+                aria-label={`עריכת ${member.name}`}
+                className="rounded-full p-1 text-ink-subtle transition hover:bg-hull-750 hover:text-ink disabled:opacity-50"
               >
-                <X className="size-4" aria-hidden />
+                <Pencil className="size-4" aria-hidden />
               </button>
-            )}
-          </li>
-        ))}
+              {member.userId !== currentUserId && (
+                <button
+                  type="button"
+                  onClick={() => remove(member.userId)}
+                  disabled={pending}
+                  aria-label={`הסרת ${member.name}`}
+                  className="rounded-full p-1 text-ink-subtle transition hover:bg-hull-750 hover:text-danger disabled:opacity-50"
+                >
+                  <X className="size-4" aria-hidden />
+                </button>
+              )}
+            </li>
+          ),
+        )}
       </ul>
 
       {error && <ErrorNote>{error}</ErrorNote>}

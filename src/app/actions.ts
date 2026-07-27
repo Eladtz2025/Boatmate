@@ -550,6 +550,36 @@ export async function addPartnerByEmail(input: {
   return ok();
 }
 
+/**
+ * Renames a partner, or flags them as the one who flies in.
+ *
+ * The display name of whoever created the boat is otherwise never set, so it
+ * falls back to the email local part ("eladtz") everywhere the crew appears.
+ * Guarded by the existing "members update crew" policy — no new privileges.
+ */
+export async function updatePartner(input: {
+  boatId: string;
+  userId: string;
+  displayName?: string | null;
+  isRemote?: boolean;
+}): Promise<ActionResult> {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("boat_members")
+    .update({
+      ...(input.displayName !== undefined && {
+        display_name: input.displayName?.trim() || null,
+      }),
+      ...(input.isRemote !== undefined && { is_remote: input.isRemote }),
+    })
+    .eq("boat_id", input.boatId)
+    .eq("user_id", input.userId);
+
+  if (error) return fail(error.message);
+  refresh("/", "/finances", "/calendar", "/settings");
+  return ok();
+}
+
 export async function removePartner(
   boatId: string,
   userId: string,
