@@ -1,14 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Anchor, TriangleAlert } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 /**
- * Recovers a session from the URL fragment (implicit flow), which the server
- * never sees. Falls back to a readable error rather than a blank redirect loop.
+ * Completes sign-in in the browser, where session cookies can actually be
+ * written, and handles both magic-link shapes:
+ *
+ *   - `?code=` (PKCE)  — exchanged against the verifier the browser client
+ *                        stored when the link was requested.
+ *   - `#access_token=` — the fragment the server never sees.
+ *
+ * Falls back to a readable message rather than a blank redirect loop.
  */
 export function CallbackHandler({
   next,
@@ -17,36 +22,43 @@ export function CallbackHandler({
   next: string;
   serverError: string | null;
 }) {
-  const router = useRouter();
   const [error, setError] = useState<string | null>(serverError);
 
   useEffect(() => {
     let cancelled = false;
 
-    // Resolves to a message to show, or null when the sign-in succeeded.
+    // Resolves to a message to show, or null when sign-in succeeded.
     // Everything runs inside the promise so no setState happens synchronously
     // in the effect body.
     async function completeSignIn(): Promise<string | null> {
-      const params = new URLSearchParams(window.location.hash.slice(1));
+      if (serverError) return serverError;
 
-      const hashError = params.get("error_description") ?? params.get("error");
+      const hash = new URLSearchParams(window.location.hash.slice(1));
+      const hashError = hash.get("error_description") ?? hash.get("error");
       if (hashError) return decodeURIComponent(hashError);
 
-      const accessToken = params.get("access_token");
-      const refreshToken = params.get("refresh_token");
-      if (!accessToken || !refreshToken) {
-        return serverError ?? "קישור הכניסה אינו תקין או שפג תוקפו.";
-      }
-
-      const { error: sessionError } = await createClient().auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      });
+      /*
+       * Do NOT call exchangeCodeForSession() here. createBrowserClient runs
+       * with detectSessionInUrl enabled, so merely constructing the client
+       * already consumes the URL — for both link shapes, `?code=` (PKCE) and
+       * `#access_token=` (implicit). A second exchange would race the library
+       * and always lose: the PKCE verifier is single-use, so ours failed with
+       * "code verifier not found in storage" *after* sign-in had in fact
+       * succeeded. getSession() awaits that initialisation, so reading the
+       * result is all that is left to do.
+       */
+      const supabase = createClient();
+      const { data, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) return sessionError.message;
+      if (!data.session) return "קישור הכניסה אינו תקין או שפג תוקפו.";
 
-      // Drop the tokens from the address bar before moving on.
-      window.history.replaceState(null, "", window.location.pathname);
-      router.replace(next);
+      /*
+       * A full document load, not router.replace(): the session cookies were
+       * just written from JS, and a hard navigation is the one thing guaranteed
+       * to send them to proxy.ts on the very next request. It also drops the
+       * code and tokens from the address bar.
+       */
+      window.location.replace(next);
       return null;
     }
 
@@ -57,7 +69,7 @@ export function CallbackHandler({
     return () => {
       cancelled = true;
     };
-  }, [next, router, serverError]);
+  }, [next, serverError]);
 
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center gap-4 px-8 text-center">

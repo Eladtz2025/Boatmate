@@ -5,6 +5,7 @@ import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
 import { WeatherCard } from "@/components/home/weather-card";
 import { QuickActions } from "@/components/home/quick-actions";
+import { PhotoLauncher } from "@/components/home/photo-launcher";
 import { TasksCard } from "@/components/home/tasks-card";
 import { Card, TileLabel } from "@/components/ui/card";
 import { headlineSettlement } from "@/lib/balance";
@@ -30,8 +31,16 @@ import {
 
 export const metadata = { title: "הבית — Boatmate" };
 
-export default async function HomePage() {
-  const boat = await getBoat();
+/** `?new=photo` — the home quick action links here. */
+const wantsNewPhoto = (value: string | string[] | undefined): boolean =>
+  (Array.isArray(value) ? value[0] : value) === "photo";
+
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ new?: string | string[] }>;
+}) {
+  const [params, boat] = await Promise.all([searchParams, getBoat()]);
   if (!boat) return null; // layout redirects to /onboarding
 
   const [balances, names, nextEvent, arrival, tasks, media, documents, heroUrl] =
@@ -189,6 +198,8 @@ export default async function HomePage() {
       <div className="mt-4 px-4">
         <QuickActions />
       </div>
+
+      <PhotoLauncher boatId={boat.id} openNew={wantsNewPhoto(params.new)} />
     </main>
   );
 }

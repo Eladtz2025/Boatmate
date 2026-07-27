@@ -12,6 +12,10 @@ const VIEWS: readonly string[] = ["month", "week", "day", "timeline"];
 const parseView = (value: string | string[] | undefined): CalendarView =>
   typeof value === "string" && VIEWS.includes(value) ? (value as CalendarView) : "month";
 
+/** `?new=event` — the home quick action and the PWA shortcut both link here. */
+const wantsNewEvent = (value: string | string[] | undefined): boolean =>
+  (Array.isArray(value) ? value[0] : value) === "event";
+
 /**
  * Fetches a wide window — three months back, twelve forward — once, so the
  * client can switch between month, week, day and timeline without a round trip.
@@ -19,9 +23,10 @@ const parseView = (value: string | string[] | undefined): CalendarView =>
 export default async function CalendarPage({
   searchParams,
 }: {
-  searchParams: Promise<{ view?: string | string[] }>;
+  searchParams: Promise<{ view?: string | string[]; new?: string | string[] }>;
 }) {
-  const [{ view }, boat] = await Promise.all([searchParams, getBoat()]);
+  const [params, boat] = await Promise.all([searchParams, getBoat()]);
+  const { view } = params;
 
   if (!boat) {
     return (
@@ -58,6 +63,7 @@ export default async function CalendarPage({
         items={items}
         initialView={parseView(view)}
         serverToday={toDateInput(now)}
+        openNew={wantsNewEvent(params.new)}
       />
     </div>
   );

@@ -81,6 +81,20 @@ expense and a pending one does not.
 constraint trigger, which is why expenses are always created through the
 `create_expense` RPC — a single transaction — never two REST inserts.
 
+**Sign-in completes in the browser, never on the server.** A Server Component
+cannot write cookies — `createClient()` in `server.ts` swallows the failure so
+ordinary reads keep working. Calling `exchangeCodeForSession` there therefore
+"succeeds" and then throws the session away, which is a silent, total sign-in
+failure. `/auth/callback` renders a client component that lets `@supabase/ssr`
+consume the URL (`detectSessionInUrl` handles both `?code=` and
+`#access_token=`) and then reads `getSession()`. Do not add a second
+`exchangeCodeForSession` call — the PKCE verifier is single-use and the manual
+call loses the race against the library.
+
+**Read Supabase env vars through `src/lib/supabase/env.ts`.** It strips a BOM and
+whitespace. A pasted value carrying an invisible `U+FEFF` broke the production
+build (`new URL` threw) and every browser request (headers must be ISO-8859-1).
+
 **Permissions: all partners are equal.** Membership in `boat_members` is the only
 gate. Every RLS policy funnels through `is_boat_member(boat_id)`, a
 `SECURITY DEFINER` function that exists so policies on `boat_members` don't

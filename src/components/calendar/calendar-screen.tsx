@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useRouter } from "next/navigation";
 import { CalendarDays, Plus } from "lucide-react";
 import type { CalendarItem, Member } from "@/lib/data";
 import { cn } from "@/lib/cn";
@@ -60,6 +61,7 @@ export function CalendarScreen({
   items,
   initialView,
   serverToday,
+  openNew = false,
 }: {
   boatId: string;
   boatName: string;
@@ -67,10 +69,19 @@ export function CalendarScreen({
   items: CalendarItem[];
   initialView: CalendarView;
   serverToday: string;
+  /** Arrived from a `?new=event` link (home quick action, PWA shortcut). */
+  openNew?: boolean;
 }) {
+  const router = useRouter();
   const [view, setView] = useState<CalendarView>(initialView);
   const [detail, setDetail] = useState<CalendarItem | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(openNew);
+
+  const closeCreate = useCallback(() => {
+    setCreating(false);
+    // Drop ?new=event so a refresh does not reopen the sheet.
+    if (openNew) router.replace("/calendar", { scroll: false });
+  }, [openNew, router]);
 
   const todayKey = useDeviceToday(serverToday);
 
@@ -261,7 +272,7 @@ export function CalendarScreen({
           boatId={boatId}
           members={members}
           defaultDateKey={selectedKey}
-          onClose={() => setCreating(false)}
+          onClose={closeCreate}
         />
       )}
     </div>

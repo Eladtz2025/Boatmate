@@ -10,7 +10,9 @@ import type { NextConfig } from "next";
  * produced by our own signed-URL calls.
  */
 function supabaseImageHost(): string {
-  const raw = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  // The BOM strip mirrors src/lib/supabase/env.ts — a copy-pasted value carrying
+  // an invisible U+FEFF is exactly what broke this build once already.
+  const raw = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/^\uFEFF/, "").trim();
   if (raw) {
     try {
       return new URL(raw).hostname;
