@@ -81,6 +81,18 @@ expense and a pending one does not.
 constraint trigger, which is why expenses are always created through the
 `create_expense` RPC — a single transaction — never two REST inserts.
 
+**Sign-in is email-only, by choice.** The login screen takes an address and
+nothing else — no password, no emailed code. `requestEntry` (`src/app/login/actions.ts`)
+checks the address against `boat_members` using the service role, then calls
+`auth.admin.generateLink` and returns only the `hashed_token`; the browser
+redeems it with `verifyOtp`. **Anyone who knows a partner's email can sign in as
+that partner.** That is an accepted trade-off for a boat shared by a few people
+who trust each other, not a bug to quietly patch. The membership check must stay
+*before* `generateLink`, which would otherwise create a user for an unknown
+address. No email is sent, which is what keeps this clear of Supabase's built-in
+SMTP limit — 2 per hour, project-wide, shared by every partner. That limit is
+what made the old magic-link screen unusable.
+
 **Sign-in completes in the browser, never on the server.** A Server Component
 cannot write cookies — `createClient()` in `server.ts` swallows the failure so
 ordinary reads keep working. Calling `exchangeCodeForSession` there therefore

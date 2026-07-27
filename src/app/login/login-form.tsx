@@ -1,61 +1,73 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { MailCheck, Send } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { LogIn } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { ErrorNote } from "@/components/ui/empty-state";
+import { requestEntry } from "./actions";
 
 /**
- * Magic-link sign-in. A boat has a handful of partners who each check email on
- * the same phone they use the app on, so a passwordless link is both the
- * simplest and the least annoying option.
+ * Email-only entrance. Type the address, press the button, you are in — no
+ * password, no code, no round trip through an email app.
+ *
+ * The two halves are split for a reason that is easy to undo by accident:
+ * `requestEntry` runs on the server because only the service role can mint the
+ * token, but `verifyOtp` has to run *here*, in the browser. A Server Component
+ * cannot write the auth cookies — `createClient()` in `server.ts` swallows that
+ * failure — so redeeming the token on the server would look like it worked and
+ * then throw the session away. See AGENTS.md.
  */
-export function LoginForm({ initialError = null }: { initialError?: string | null }) {
+export function LoginForm({
+  initialError = null,
+  next = "/",
+}: {
+  initialError?: string | null;
+  next?: string;
+}) {
+  const router = useRouter();
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "sending" | "sent">("idle");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
-    setStatus("sending");
+    setBusy(true);
 
-    const supabase = createClient();
-    const { error: authError } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    // A rejected server action (bad deploy, no network, missing env var) would
+    // otherwise leave the button spinning with nothing on screen.
+    try {
+      const result = await requestEntry(email);
+      if (!result.ok) {
+        setError(result.error);
+        setBusy(false);
+        return;
+      }
 
-    if (authError) {
-      setError(authError.message);
-      setStatus("idle");
+      const supabase = createClient();
+      const { error: verifyError } = await supabase.auth.verifyOtp({
+        token_hash: result.tokenHash,
+        type: "magiclink",
+      });
+
+      if (verifyError) {
+        setError(verifyError.message);
+        setBusy(false);
+        return;
+      }
+    } catch (cause) {
+      console.error("[login] entry failed:", cause);
+      setError("לא הצלחנו להיכנס. בדקו את החיבור ונסו שוב.");
+      setBusy(false);
       return;
     }
 
-    setStatus("sent");
-  }
-
-  if (status === "sent") {
-    return (
-      <div className="card flex flex-col items-center gap-3 p-6 text-center">
-        <MailCheck className="size-8 text-teal-400" aria-hidden />
-        <p className="font-medium">הקישור נשלח</p>
-        <p className="text-sm text-ink-muted">
-          שלחנו קישור כניסה אל <span className="numeric">{email}</span>. פתחו אותו
-          מהמכשיר הזה.
-        </p>
-        <button
-          type="button"
-          onClick={() => setStatus("idle")}
-          className="text-xs text-teal-400 hover:text-teal-500"
-        >
-          שליחה לכתובת אחרת
-        </button>
-      </div>
-    );
+    // Deliberately leaves `busy` set: the button stays in its loading state
+    // until the new route paints, instead of flicking back to idle first.
+    router.replace(next);
+    router.refresh();
   }
 
   return (
@@ -69,7 +81,9 @@ export function LoginForm({ initialError = null }: { initialError?: string | nul
           type="email"
           dir="ltr"
           required
+          autoFocus
           autoComplete="email"
+          enterKeyHint="go"
           value={email}
           onChange={(event) => setEmail(event.target.value)}
           placeholder="you@example.com"
@@ -83,14 +97,14 @@ export function LoginForm({ initialError = null }: { initialError?: string | nul
         type="submit"
         block
         size="lg"
-        loading={status === "sending"}
-        icon={<Send className="size-4" aria-hidden />}
+        loading={busy}
+        icon={<LogIn className="size-4" aria-hidden />}
       >
-        שליחת קישור כניסה
+        כניסה
       </Button>
 
       <p className="pt-1 text-center text-xs text-ink-subtle">
-        אין צורך בסיסמה — נשלח לכם קישור חד-פעמי.
+        הכניסה פתוחה לשותפי הסירה בלבד.
       </p>
     </form>
   );

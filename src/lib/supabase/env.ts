@@ -26,7 +26,7 @@
  * U+FEFF is written as an escape on purpose: the literal character is invisible
  * in an editor, which is the very problem this function exists to solve.
  */
-function clean(value: string | undefined, name: string): string {
+export function cleanEnv(value: string | undefined, name: string): string {
   const cleaned = value?.replace(/^\uFEFF/, "").trim();
   if (!cleaned) {
     throw new Error(
@@ -36,12 +36,12 @@ function clean(value: string | undefined, name: string): string {
   return cleaned;
 }
 
-export const SUPABASE_URL = clean(
+export const SUPABASE_URL = cleanEnv(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   "NEXT_PUBLIC_SUPABASE_URL",
 );
 
-export const SUPABASE_ANON_KEY = clean(
+export const SUPABASE_ANON_KEY = cleanEnv(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
 );
