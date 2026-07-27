@@ -45,3 +45,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Re-stated by `vercel link`. The negation must come last: git applies the
+# final matching pattern, so `!.env.example` has to follow `.env*` to survive.
+.env*
+!.env.example

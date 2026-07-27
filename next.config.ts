@@ -1,8 +1,30 @@
 import type { NextConfig } from "next";
 
-const supabaseHost = process.env.NEXT_PUBLIC_SUPABASE_URL
-  ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname
-  : undefined;
+/**
+ * Host allowed to serve optimised images (Supabase Storage signed URLs).
+ *
+ * Derived from the env var when it parses, but never at the cost of the build:
+ * a missing or malformed NEXT_PUBLIC_SUPABASE_URL used to throw here and fail
+ * `next build` outright, which is a poor trade for one config value. Falls back
+ * to any Supabase project host — still narrow, since these URLs are only ever
+ * produced by our own signed-URL calls.
+ */
+function supabaseImageHost(): string {
+  const raw = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  if (raw) {
+    try {
+      return new URL(raw).hostname;
+    } catch {
+      console.warn(
+        "[next.config] NEXT_PUBLIC_SUPABASE_URL is not a valid URL; " +
+          "falling back to *.supabase.co for image optimisation.",
+      );
+    }
+  }
+  return "*.supabase.co";
+}
+
+const supabaseHost = supabaseImageHost();
 
 const nextConfig: NextConfig = {
   // A stray package-lock.json in the home directory makes Turbopack guess the
@@ -10,15 +32,13 @@ const nextConfig: NextConfig = {
   turbopack: { root: import.meta.dirname },
   images: {
     // Storage objects are served through short-lived signed URLs.
-    remotePatterns: supabaseHost
-      ? [
-          {
-            protocol: "https",
-            hostname: supabaseHost,
-            pathname: "/storage/v1/object/**",
-          },
-        ]
-      : [],
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: supabaseHost,
+        pathname: "/storage/v1/object/**",
+      },
+    ],
   },
   async headers() {
     return [
