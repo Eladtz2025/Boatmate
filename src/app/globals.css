@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Boatmate design tokens — deep navy hull, teal running-light accent.
+   Defined once here; components only ever reference the semantic names.
+   ========================================================================== */
+@theme {
+  /* Hull — the navy ramp, darkest to lightest */
+  --color-hull-950: #06121e;
+  --color-hull-900: #0a1a2a;
+  --color-hull-850: #0d2033;
+  --color-hull-800: #12283d;
+  --color-hull-750: #17314a;
+  --color-hull-700: #1d3a57;
+
+  /* Running light — teal accent */
+  --color-teal-soft: #16404a;
+  --color-teal-400: #2ed3c6;
+  --color-teal-500: #22bdb2;
+  --color-teal-600: #16a89e;
+
+  /* Ink */
+  --color-ink: #eaf2f9;
+  --color-ink-muted: #93a8bf;
+  --color-ink-subtle: #6b8099;
+
+  /* Status */
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+  --color-success: #34d399;
+
+  --radius-card: 1.25rem;
+  --radius-tile: 1rem;
+
+  --font-sans: var(--font-heebo), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  --hairline: rgb(234 242 249 / 0.09);
+  --nav-height: 4.25rem;
+}
+
+html {
+  background-color: var(--color-hull-950);
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-color: var(--color-hull-900);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  /* Hebrew reads better with slightly looser leading at small sizes */
+  line-height: 1.55;
+  overscroll-behavior-y: none;
+  min-height: 100dvh;
+}
+
+@layer components {
+  /* Standard raised surface used by every card in the app. */
+  .card {
+    background-color: var(--color-hull-800);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-card);
+  }
+
+  .hairline {
+    border-color: var(--hairline);
+  }
+
+  /* Numbers, currency and dates stay LTR even inside RTL text. */
+  .numeric {
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Horizontal chip rows scroll without showing a bar. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-teal-400);
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+  }
+
+  button,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Motion
+   -------------------------------------------------------------------------- */
+@keyframes sheet-up {
+  from {
+    transform: translateY(6%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-sheet-up {
+  animation: sheet-up 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.animate-fade-in {
+  animation: fade-in 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

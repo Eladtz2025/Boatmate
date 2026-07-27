@@ -1,0 +1,428 @@
+import "server-only";
+import { cache } from "react";
+import { createClient } from "./supabase/server";
+import { computeBalances, type ExpenseInput, type TransferInput } from "./balance";
+
+/**
+ * Server-side reads. Every query is scoped by RLS to boats the caller belongs
+ * to, so none of these functions filter by user id themselves.
+ *
+ * `cache()` dedupes within a single render pass — the home screen asks for the
+ * boat and the crew from several components without re-querying.
+ */
+
+export type Member = {
+  userId: string;
+  name: string;
+  color: string;
+  isRemote: boolean;
+};
+
+export type Boat = {
+  id: string;
+  name: string;
+  tagline: string | null;
+  model: string | null;
+  homePort: string | null;
+  photoPath: string | null;
+  statusText: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
+
+export const getCurrentUser = cache(async () => {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+});
+
+/** The caller's boat. MVP assumes one boat per user; the newest wins. */
+export const getBoat = cache(async (): Promise<Boat | null> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("boats")
+    .select("id, name, tagline, model, home_port, photo_path, status_text, latitude, longitude")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    name: data.name,
+    tagline: data.tagline,
+    model: data.model,
+    homePort: data.home_port,
+    photoPath: data.photo_path,
+    statusText: data.status_text,
+    latitude: data.latitude,
+    longitude: data.longitude,
+  };
+});
+
+export const getMembers = cache(async (boatId: string): Promise<Member[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("boat_members")
+    .select("user_id, display_name, color, is_remote, profiles(full_name)")
+    .eq("boat_id", boatId);
+
+  return (data ?? []).map((row) => {
+    const profile = row.profiles as { full_name: string | null } | null;
+    return {
+      userId: row.user_id,
+      name: row.display_name || profile?.full_name || "שותף",
+      color: row.color,
+      isRemote: row.is_remote,
+    };
+  });
+});
+
+/** userId → display name, for message builders and avatars. */
+export async function getMemberNames(boatId: string): Promise<Record<string, string>> {
+  const members = await getMembers(boatId);
+  return Object.fromEntries(members.map((m) => [m.userId, m.name]));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Finances                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export type ExpenseRow = {
+  id: string;
+  paidBy: string;
+  amountAgorot: number;
+  category: string;
+  description: string | null;
+  spentOn: string;
+  receiptPath: string | null;
+  source: string;
+  shares: Array<{ userId: string; shareAgorot: number }>;
+};
+
+export const getExpenses = cache(async (boatId: string): Promise<ExpenseRow[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("expenses")
+    .select(
+      "id, paid_by, amount_agorot, category, description, spent_on, receipt_path, source, expense_shares(user_id, share_agorot)",
+    )
+    .eq("boat_id", boatId)
+    .order("spent_on", { ascending: false });
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    paidBy: row.paid_by,
+    amountAgorot: row.amount_agorot,
+    category: row.category,
+    description: row.description,
+    spentOn: row.spent_on,
+    receiptPath: row.receipt_path,
+    source: row.source,
+    shares: (row.expense_shares ?? []).map((s) => ({
+      userId: s.user_id,
+      shareAgorot: s.share_agorot,
+    })),
+  }));
+});
+
+export type TransferRow = {
+  id: string;
+  fromUser: string;
+  toUser: string;
+  amountAgorot: number;
+  transferredOn: string;
+  note: string | null;
+};
+
+export const getTransfers = cache(async (boatId: string): Promise<TransferRow[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("transfers")
+    .select("id, from_user, to_user, amount_agorot, transferred_on, note")
+    .eq("boat_id", boatId)
+    .order("transferred_on", { ascending: false });
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    fromUser: row.from_user,
+    toUser: row.to_user,
+    amountAgorot: row.amount_agorot,
+    transferredOn: row.transferred_on,
+    note: row.note,
+  }));
+});
+
+/**
+ * Balances, computed with the tested engine in lib/balance.ts rather than read
+ * from the database view — one implementation, one place to reason about.
+ */
+export const getBalances = cache(async (boatId: string) => {
+  const [members, expenses, transfers] = await Promise.all([
+    getMembers(boatId),
+    getExpenses(boatId),
+    getTransfers(boatId),
+  ]);
+
+  const expenseInputs: ExpenseInput[] = expenses.map((e) => ({
+    id: e.id,
+    paidBy: e.paidBy,
+    amountAgorot: e.amountAgorot,
+    shares: e.shares,
+  }));
+
+  const transferInputs: TransferInput[] = transfers.map((t) => ({
+    id: t.id,
+    fromUser: t.fromUser,
+    toUser: t.toUser,
+    amountAgorot: t.amountAgorot,
+  }));
+
+  return computeBalances(
+    members.map((m) => m.userId),
+    expenseInputs,
+    transferInputs,
+  );
+});
+
+export type RecurringRow = {
+  id: string;
+  title: string;
+  category: string;
+  amountAgorot: number;
+  cadence: string;
+  dayOfMonth: number;
+  active: boolean;
+  defaultPaidBy: string | null;
+  splitMode: string;
+};
+
+export const getRecurringPayments = cache(async (boatId: string): Promise<RecurringRow[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("recurring_payments")
+    .select("id, title, category, amount_agorot, cadence, day_of_month, active, default_paid_by, split_mode")
+    .eq("boat_id", boatId)
+    .order("day_of_month");
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    amountAgorot: row.amount_agorot,
+    cadence: row.cadence,
+    dayOfMonth: row.day_of_month,
+    active: row.active,
+    defaultPaidBy: row.default_paid_by,
+    splitMode: row.split_mode,
+  }));
+});
+
+export type OccurrenceRow = {
+  id: string;
+  recurringPaymentId: string;
+  title: string;
+  category: string;
+  amountAgorot: number;
+  dueOn: string;
+  status: string;
+  defaultPaidBy: string | null;
+};
+
+/** Pending occurrences only — these never touch balances until confirmed. */
+export const getUpcomingPayments = cache(
+  async (boatId: string, limit = 20): Promise<OccurrenceRow[]> => {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from("recurring_occurrences")
+      .select(
+        "id, recurring_payment_id, amount_agorot, due_on, status, recurring_payments(title, category, default_paid_by)",
+      )
+      .eq("boat_id", boatId)
+      .eq("status", "pending")
+      .order("due_on")
+      .limit(limit);
+
+    return (data ?? []).map((row) => {
+      const parent = row.recurring_payments as {
+        title: string;
+        category: string;
+        default_paid_by: string | null;
+      } | null;
+      return {
+        id: row.id,
+        recurringPaymentId: row.recurring_payment_id,
+        title: parent?.title ?? "תשלום",
+        category: parent?.category ?? "other",
+        amountAgorot: row.amount_agorot,
+        dueOn: row.due_on,
+        status: row.status,
+        defaultPaidBy: parent?.default_paid_by ?? null,
+      };
+    });
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* Documents, calendar, tasks                                                 */
+/* -------------------------------------------------------------------------- */
+
+export type DocumentRow = {
+  id: string;
+  title: string;
+  category: string;
+  filePath: string;
+  originalName: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  issuedOn: string | null;
+  expiresOn: string | null;
+  reminderDays: number;
+  notes: string | null;
+  createdAt: string;
+};
+
+export const getDocuments = cache(async (boatId: string): Promise<DocumentRow[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("documents")
+    .select(
+      "id, title, category, file_path, original_name, mime_type, size_bytes, issued_on, expires_on, reminder_days, notes, created_at",
+    )
+    .eq("boat_id", boatId)
+    .order("created_at", { ascending: false });
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    filePath: row.file_path,
+    originalName: row.original_name,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    issuedOn: row.issued_on,
+    expiresOn: row.expires_on,
+    reminderDays: row.reminder_days,
+    notes: row.notes,
+    createdAt: row.created_at,
+  }));
+});
+
+export type CalendarItem = {
+  id: string;
+  kind: string;
+  title: string;
+  startsAt: string;
+  endsAt: string | null;
+  allDay: boolean;
+  location: string | null;
+  amountAgorot: number | null;
+};
+
+/**
+ * The unified feed: real events plus derived document expiries and pending
+ * payment dates, straight from the v_calendar_items view.
+ */
+export const getCalendarItems = cache(
+  async (boatId: string, fromISO?: string, toISO?: string): Promise<CalendarItem[]> => {
+    const supabase = await createClient();
+    let query = supabase
+      .from("v_calendar_items")
+      .select("id, kind, title, starts_at, ends_at, all_day, location, amount_agorot")
+      .eq("boat_id", boatId);
+
+    if (fromISO) query = query.gte("starts_at", fromISO);
+    if (toISO) query = query.lte("starts_at", toISO);
+
+    const { data } = await query.order("starts_at");
+
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      kind: row.kind as string,
+      title: row.title as string,
+      startsAt: row.starts_at as string,
+      endsAt: row.ends_at as string | null,
+      allDay: row.all_day as boolean,
+      location: row.location as string | null,
+      amountAgorot: row.amount_agorot as number | null,
+    }));
+  },
+);
+
+export const getNextEvent = cache(async (boatId: string): Promise<CalendarItem | null> => {
+  const items = await getCalendarItems(boatId, new Date().toISOString());
+  return items.find((item) => item.kind === "usage") ?? items[0] ?? null;
+});
+
+/** Arrival events for partners who fly in — shown on the home screen. */
+export const getNextArrival = cache(async (boatId: string) => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("events")
+    .select("id, title, starts_at, ends_at, user_id")
+    .eq("boat_id", boatId)
+    .eq("kind", "arrival")
+    .gte("starts_at", new Date().toISOString())
+    .order("starts_at")
+    .limit(1)
+    .maybeSingle();
+
+  return data ?? null;
+});
+
+export type TaskRow = {
+  id: string;
+  title: string;
+  done: boolean;
+  dueOn: string | null;
+  assignedTo: string | null;
+};
+
+export const getOpenTasks = cache(async (boatId: string): Promise<TaskRow[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("tasks")
+    .select("id, title, done, due_on, assigned_to")
+    .eq("boat_id", boatId)
+    .eq("done", false)
+    .order("due_on", { nullsFirst: false });
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    title: row.title,
+    done: row.done,
+    dueOn: row.due_on,
+    assignedTo: row.assigned_to,
+  }));
+});
+
+export const getRecentMedia = cache(async (boatId: string, limit = 6) => {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("media")
+    .select("id, path, caption")
+    .eq("boat_id", boatId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  return data ?? [];
+});
+
+/* -------------------------------------------------------------------------- */
+/* Storage                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Buckets are private, so files are always served via short-lived signed URLs. */
+export async function getSignedUrl(
+  bucket: string,
+  path: string | null | undefined,
+  expiresIn = 3600,
+): Promise<string | null> {
+  if (!path) return null;
+  const supabase = await createClient();
+  const { data } = await supabase.storage.from(bucket).createSignedUrl(path, expiresIn);
+  return data?.signedUrl ?? null;
+}
