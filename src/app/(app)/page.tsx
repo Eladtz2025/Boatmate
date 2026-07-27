@@ -1,11 +1,11 @@
 import Link from "next/link";
-import Image from "next/image";
 import { CalendarClock, ImageIcon, Plane, Scale } from "lucide-react";
 import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
 import { WeatherCard } from "@/components/home/weather-card";
 import { QuickActions } from "@/components/home/quick-actions";
 import { PhotoLauncher } from "@/components/home/photo-launcher";
+import { MediaStrip } from "@/components/home/media-strip";
 import { TasksCard } from "@/components/home/tasks-card";
 import { Card, TileLabel } from "@/components/ui/card";
 import { headlineSettlement } from "@/lib/balance";
@@ -63,11 +63,16 @@ export default async function HomePage({
       doc.expiresOn !== null && daysUntil(doc.expiresOn) <= doc.reminderDays,
   ).length;
 
-  const mediaUrls = (
+  // Signed URLs expire, so they are minted per render and paired with the row
+  // id — the id is what the delete action needs.
+  const mediaThumbs = (
     await Promise.all(
-      media.slice(0, 3).map((item) => getSignedUrl(BUCKETS.media, item.path)),
+      media.slice(0, 3).map(async (item) => {
+        const url = await getSignedUrl(BUCKETS.media, item.path);
+        return url ? { id: item.id, url, caption: item.caption } : null;
+      }),
     )
-  ).filter((url): url is string => url !== null);
+  ).filter((thumb) => thumb !== null);
 
   return (
     <main className="flex-1 pb-24">
@@ -167,28 +172,11 @@ export default async function HomePage({
             <ImageIcon className="size-4 text-ink-subtle" aria-hidden />
           </div>
 
-          {mediaUrls.length > 0 ? (
-            <div className="flex items-center gap-1.5">
-              {mediaUrls.map((url) => (
-                <div
-                  key={url}
-                  className="relative size-12 shrink-0 overflow-hidden rounded-lg border border-[var(--hairline)]"
-                >
-                  <Image
-                    src={url}
-                    alt=""
-                    fill
-                    sizes="48px"
-                    className="object-cover"
-                  />
-                </div>
-              ))}
-              {media.length > mediaUrls.length && (
-                <span className="numeric flex size-12 shrink-0 items-center justify-center rounded-lg bg-hull-750 text-xs font-medium text-ink-muted">
-                  +{media.length - mediaUrls.length}
-                </span>
-              )}
-            </div>
+          {mediaThumbs.length > 0 ? (
+            <MediaStrip
+              items={mediaThumbs}
+              extraCount={media.length - mediaThumbs.length}
+            />
           ) : (
             <p className="text-xs text-ink-subtle">עדיין אין תמונות</p>
           )}

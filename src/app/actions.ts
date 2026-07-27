@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { splitEqual, splitByPercent } from "@/lib/balance";
+import { BUCKETS } from "@/lib/constants";
 
 /**
  * Every mutation in the app. Files are uploaded straight from the browser to
@@ -489,6 +490,33 @@ export async function setTaskDone(id: string, done: boolean): Promise<ActionResu
 /* -------------------------------------------------------------------------- */
 /* Media                                                                      */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Removes a photo and its Storage object.
+ *
+ * The object has to go through the Storage API — Postgres refuses a direct
+ * DELETE on storage.objects (storage.protect_delete), precisely so rows and
+ * files cannot drift apart.
+ */
+export async function deleteMedia(id: string): Promise<ActionResult> {
+  const supabase = await createClient();
+
+  const { data: item } = await supabase
+    .from("media")
+    .select("path")
+    .eq("id", id)
+    .maybeSingle();
+
+  const { error } = await supabase.from("media").delete().eq("id", id);
+  if (error) return fail(error.message);
+
+  if (item?.path) {
+    await supabase.storage.from(BUCKETS.media).remove([item.path]);
+  }
+
+  refresh("/");
+  return ok();
+}
 
 export async function createMedia(input: {
   boatId: string;
