@@ -7,7 +7,13 @@ import { TileLabel } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import type { TaskRow } from "@/lib/data";
 
-export function TasksCard({ tasks }: { tasks: TaskRow[] }) {
+export function TasksCard({
+  tasks,
+  className,
+}: {
+  tasks: TaskRow[];
+  className?: string;
+}) {
   const [pending, startTransition] = useTransition();
   const [done, setDone] = useState<Set<string>>(new Set());
 
@@ -29,7 +35,7 @@ export function TasksCard({ tasks }: { tasks: TaskRow[] }) {
   const open = tasks.filter((task) => !done.has(task.id));
 
   return (
-    <div className="card flex flex-col gap-2 p-4">
+    <div className={cn("card flex flex-col gap-2 p-4", className)}>
       <div className="flex items-center justify-between">
         <TileLabel>משימות פתוחות</TileLabel>
         <ListTodo className="size-4 text-ink-subtle" aria-hidden />

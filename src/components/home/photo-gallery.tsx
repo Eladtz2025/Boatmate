@@ -22,8 +22,6 @@ import { PhotoSheet } from "./photo-sheet";
 type GalleryApi = {
   /** Opens the viewer on a given photo, or on the first one. */
   open: (photoId?: string) => void;
-  openUpload: () => void;
-  count: number;
 };
 
 const GalleryContext = createContext<GalleryApi | null>(null);
@@ -375,7 +373,7 @@ export function PhotoGallery({
   }
 
   return (
-    <GalleryContext.Provider value={{ open, openUpload, count: photos.length }}>
+    <GalleryContext.Provider value={{ open }}>
       {children}
 
       {viewerOpen && (

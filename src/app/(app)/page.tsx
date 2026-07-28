@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { ImageIcon, Plane, Scale } from "lucide-react";
+import { Plane, Scale } from "lucide-react";
 import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
 import {
@@ -12,12 +12,10 @@ import {
   GalleryTrigger,
   PhotoGallery,
 } from "@/components/home/photo-gallery";
-import { MediaStrip } from "@/components/home/media-strip";
 import { TasksCard } from "@/components/home/tasks-card";
 import { Card, TileLabel } from "@/components/ui/card";
 import { headlineSettlement } from "@/lib/balance";
 import { formatAgorotAbs, formatDateRange, daysUntil } from "@/lib/format";
-import { HERO_PHOTO_ID } from "@/lib/gallery";
 import {
   getBalances,
   getBoat,
@@ -60,13 +58,8 @@ export default async function HomePage({
       doc.expiresOn !== null && daysUntil(doc.expiresOn) <= doc.reminderDays,
   ).length;
 
+  // Hero first, so this is the photo the gallery also opens on.
   const heroUrl = photos[0]?.url ?? null;
-
-  // The strip is the crew's photos. A hero uploaded from settings has no media
-  // row behind it and is already the big picture above, so it is not one of
-  // them; a hero promoted from the gallery is.
-  const galleryPhotos = photos.filter((photo) => photo.id !== HERO_PHOTO_ID);
-  const mediaThumbs = galleryPhotos.slice(0, 3);
 
   return (
     <main className="flex-1 pb-24">
@@ -151,25 +144,10 @@ export default async function HomePage({
             </Link>
           </Card>
 
-          <TasksCard tasks={tasks} />
-
-          {/* Recent photos */}
-          <Card className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <TileLabel>תמונות אחרונות</TileLabel>
-              <ImageIcon className="size-4 text-ink-subtle" aria-hidden />
-            </div>
-
-            {mediaThumbs.length > 0 ? (
-              <MediaStrip
-                items={mediaThumbs}
-                extraCount={galleryPhotos.length - mediaThumbs.length}
-                moreFromId={galleryPhotos[mediaThumbs.length]?.id}
-              />
-            ) : (
-              <p className="text-xs text-ink-subtle">עדיין אין תמונות</p>
-            )}
-          </Card>
+          {/* Full width: there was a photo tile beside this, but the hero photo
+              is the way into the gallery now and a second door to the same room
+              was not worth a grid slot. Task titles get the room instead. */}
+          <TasksCard tasks={tasks} className="col-span-2" />
         </div>
 
         <div className="mt-4 px-4">
