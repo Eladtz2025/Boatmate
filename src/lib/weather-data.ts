@@ -1,5 +1,10 @@
 import "server-only";
-import { TEL_AVIV, type DailyForecast, type Weather } from "./weather";
+import {
+  TEL_AVIV,
+  type DailyForecast,
+  type HourReading,
+  type Weather,
+} from "./weather";
 
 /**
  * Marine conditions, fetched on the server.
@@ -37,13 +42,64 @@ const round = (value: unknown): number =>
 const numberOrNull = (value: unknown): number | null =>
   typeof value === "number" ? value : null;
 
+/**
+ * The hour out of a bare local timestamp, "2026-07-29T14:00" → 14.
+ *
+ * Read straight off the string rather than through `Date`. The request carries
+ * `timezone=auto`, so these are already Tel Aviv wall-clock times — parsing
+ * them on a UTC server would shift every one of them by the offset, which is
+ * the exact trap the sunset handling above exists to avoid.
+ */
+function localHour(timestamp: string): number {
+  return Number(timestamp.slice(11, 13));
+}
+
+/**
+ * Sun times rounded *inward* to whole hours: sunrise 05:56 makes 06:00 the
+ * first usable hour, sunset 19:41 makes 19:00 the last. Rounding the other way
+ * offered a 05:00 start on a day the sun was not up yet.
+ */
+function firstDaylightHour(sunriseLocal: string): number {
+  const minutes = Number(sunriseLocal.slice(14, 16));
+  return minutes > 0 ? localHour(sunriseLocal) + 1 : localHour(sunriseLocal);
+}
+
+/** Everything between sunrise and sunset — nobody is planning a 03:00 sail. */
+function daylightHours(
+  times: string[],
+  wind: number[],
+  gusts: number[],
+  date: string,
+  sunriseLocal: string | undefined,
+  sunsetLocal: string | undefined,
+): HourReading[] {
+  // Without a sun time, fall back to a generous daylight span rather than
+  // dropping the whole profile.
+  const from = sunriseLocal ? firstDaylightHour(sunriseLocal) : 6;
+  const to = sunsetLocal ? localHour(sunsetLocal) : 20;
+
+  const hours: HourReading[] = [];
+  for (const [index, timestamp] of times.entries()) {
+    if (!timestamp.startsWith(date)) continue;
+    const hour = localHour(timestamp);
+    if (hour < from || hour > to) continue;
+    hours.push({
+      hour,
+      windSpeedKn: round(wind[index]),
+      windGustKn: round(gusts[index]),
+    });
+  }
+  return hours;
+}
+
 export async function getConditions(): Promise<Weather | null> {
   const { latitude, longitude } = TEL_AVIV;
 
   const forecastUrl =
     `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
     `&current=temperature_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,visibility` +
-    `&daily=sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant` +
+    `&daily=sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_direction_10m_dominant` +
+    `&hourly=wind_speed_10m,wind_gusts_10m` +
     `&wind_speed_unit=kn&timezone=auto&forecast_days=${FORECAST_DAYS}`;
 
   const marineUrl =
@@ -90,20 +146,40 @@ export async function getConditions(): Promise<Weather | null> {
       ]),
     );
 
+    const hourly = forecast.hourly ?? {};
+
     const days: DailyForecast[] = ((daily.time ?? []) as string[]).map(
       (date, index) => {
         const seaDay = seaByDate.get(date);
+        const hours = daylightHours(
+          hourly.time ?? [],
+          hourly.wind_speed_10m ?? [],
+          hourly.wind_gusts_10m ?? [],
+          date,
+          daily.sunrise?.[index],
+          daily.sunset?.[index],
+        );
+
+        // Ranges over the daylight hours we actually kept, so the floor is the
+        // calmest sailable hour rather than 03:00.
+        const winds = hours.map((hour) => hour.windSpeedKn);
+        const gusts = hours.map((hour) => hour.windGustKn);
+
         return {
           date,
           weatherCode: daily.weather_code?.[index] ?? 0,
           tempMax: round(daily.temperature_2m_max?.[index]),
           tempMin: round(daily.temperature_2m_min?.[index]),
-          windSpeedKn: round(daily.wind_speed_10m_max?.[index]),
-          windGustKn: round(daily.wind_gusts_10m_max?.[index]),
+          windMinKn: winds.length ? Math.min(...winds) : 0,
+          windMaxKn: winds.length ? Math.max(...winds) : 0,
+          gustMinKn: gusts.length ? Math.min(...gusts) : 0,
+          gustMaxKn: gusts.length ? Math.max(...gusts) : 0,
           windDirection: daily.wind_direction_10m_dominant?.[index] ?? 0,
           waveHeight: seaDay?.height ?? null,
           wavePeriod: seaDay?.period ?? null,
+          sunrise: resolveInstant(daily.sunrise?.[index], offsetSeconds),
           sunset: resolveInstant(daily.sunset?.[index], offsetSeconds),
+          hours,
         };
       },
     );

@@ -8,6 +8,7 @@ import {
   CloudSun,
   Eye,
   Snowflake,
+  Sailboat,
   Sun,
   Sunset,
   Thermometer,
@@ -18,16 +19,21 @@ import {
 } from "lucide-react";
 import { TileLabel } from "@/components/ui/card";
 import {
+  CALM_GUST_KN,
   TEL_AVIV,
+  calmWindow,
+  dailyVerdict,
   dayDate,
   dayLabel,
   describeWeather,
+  formatWindow,
   hoursUntilSunset,
   isGusty,
   sailingVerdict,
   seaStateLabel,
   windDirectionShort,
   type DailyForecast,
+  type HourReading,
   type Verdict,
   type Weather,
 } from "@/lib/weather";
@@ -56,6 +62,108 @@ const HEADING = `תנאי הפלגה · ${TEL_AVIV.label}`;
 
 /** How many days the carousel pages through — today plus the next four. */
 const PANELS = 5;
+
+/** The hour it is right now in Tel Aviv — the server clock is UTC. */
+function telAvivHour(): number {
+  return Number(
+    new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      hour12: false,
+      timeZone: TEL_AVIV.timeZone,
+    }).format(new Date()),
+  );
+}
+
+/**
+ * Gusts hour by hour, which is the whole reason this card grew a forecast:
+ * a summer day here is glass until noon and 22 knots by two, and one number
+ * for the day describes neither half of it.
+ *
+ * Bars past the calm limit go amber, so the shape of the sea breeze is legible
+ * without reading a single figure. Laid out right-to-left like everything else
+ * in the app — the hour labels underneath keep it unambiguous.
+ */
+function GustProfile({ hours }: { hours: HourReading[] }) {
+  const peak = Math.max(CALM_GUST_KN, ...hours.map((hour) => hour.windGustKn));
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between text-[11px] text-ink-muted">
+        <span>משבים לפי שעה</span>
+        <span className="numeric text-ink-subtle">קשר</span>
+      </div>
+
+      <div className="relative h-12">
+        {/* The calm line, so a bar's height reads as "over" or "under". */}
+        <div
+          className="absolute inset-x-0 border-t border-dashed border-ink-subtle/40"
+          style={{ bottom: `${(CALM_GUST_KN / peak) * 100}%` }}
+        >
+          <span className="numeric absolute -top-3.5 end-0 text-[9px] text-ink-subtle">
+            {CALM_GUST_KN}
+          </span>
+        </div>
+
+        <div className="flex h-full items-end gap-px">
+          {hours.map((hour) => (
+            <div
+              key={hour.hour}
+              className={cn(
+                "min-h-px flex-1 rounded-t-sm",
+                hour.windGustKn >= CALM_GUST_KN
+                  ? "bg-warning/80"
+                  : "bg-teal-400/70",
+              )}
+              style={{ height: `${(hour.windGustKn / peak) * 100}%` }}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-px">
+        {hours.map((hour) => (
+          <span
+            key={hour.hour}
+            className="numeric flex-1 text-center text-[9px] leading-none text-ink-subtle"
+          >
+            {hour.hour % 4 === 0 ? String(hour.hour).padStart(2, "0") : ""}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** "⛵ הכי רגוע: 06:00–11:00" — the line the card exists to produce. */
+function CalmWindowLine({ hours }: { hours: HourReading[] }) {
+  const window = calmWindow(hours);
+
+  if (!window) {
+    return (
+      <p className="text-[11px] text-ink-subtle">
+        המשבים לא יורדים מתחת ל<span className="numeric">{CALM_GUST_KN}</span>{" "}
+        קשר לאורך היום
+      </p>
+    );
+  }
+
+  const inWindow = hours.filter(
+    (hour) => hour.hour >= window.fromHour && hour.hour < window.toHour,
+  );
+  const gust = Math.max(0, ...inWindow.map((hour) => hour.windGustKn));
+
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 text-[11px] text-teal-400">
+      <Sailboat className="size-3.5 shrink-0" aria-hidden />
+      <span className="font-medium">
+        הכי רגוע: <span className="numeric">{formatWindow(window)}</span>
+      </span>
+      <span className="text-ink-subtle">
+        משבים עד <span className="numeric">{gust}</span> קשר
+      </span>
+    </p>
+  );
+}
 
 /** Named zone, always: the server renders this in UTC. */
 function formatClock(instant: string | null): string | null {
@@ -155,10 +263,22 @@ function VerdictLine({ verdict }: { verdict: Verdict }) {
 
 /** Now: live readings, and the two extras only the current hour has —
  *  visibility and how much daylight is left to use. */
-function TodayPanel({ weather }: { weather: Weather }) {
+function TodayPanel({
+  weather,
+  today,
+}: {
+  weather: Weather;
+  today: DailyForecast | undefined;
+}) {
   const gusty = isGusty(weather.windSpeedKn, weather.windGustKn);
   const daylightLeft = hoursUntilSunset(weather.sunset);
   const sunsetTime = formatClock(weather.sunset);
+
+  // Hours already gone are noise on today's panel — the profile here answers
+  // "when should we go out from now", not "what did this morning look like".
+  const currentHour = telAvivHour();
+  const remaining =
+    today?.hours.filter((hour) => hour.hour >= currentHour) ?? [];
 
   return (
     <div className="flex flex-col gap-3">
@@ -213,8 +333,13 @@ function TodayPanel({ weather }: { weather: Weather }) {
         />
       </div>
 
+      {/* Two bars is not a profile; late in the day there is nothing to plot. */}
+      {remaining.length >= 3 && <GustProfile hours={remaining} />}
+
       <div className="flex flex-col gap-1.5 border-t border-[var(--hairline)] pt-2.5">
         <VerdictLine verdict={sailingVerdict(weather)} />
+
+        {remaining.length >= 3 && <CalmWindowLine hours={remaining} />}
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-subtle">
           {sunsetTime && (
@@ -244,12 +369,11 @@ function TodayPanel({ weather }: { weather: Weather }) {
 
 /**
  * A day ahead. Same rhythm as today so swiping does not reshuffle the layout,
- * but every reading here is the day's peak rather than a reading at an instant
- * — see `DailyForecast`. The footer says so, because a 22-knot tile means
- * something quite different when it is a daily maximum.
+ * but wind and gust are given as the range across daylight rather than as one
+ * number — and the profile underneath shows where in the day each end of that
+ * range falls, which is the part a single figure can never carry.
  */
 function DayPanel({ day }: { day: DailyForecast }) {
-  const gusty = isGusty(day.windSpeedKn, day.windGustKn);
   const sunsetTime = formatClock(day.sunset);
 
   return (
@@ -270,13 +394,13 @@ function DayPanel({ day }: { day: DailyForecast }) {
           label="גובה גלים"
           value={day.waveHeight === null ? "—" : day.waveHeight.toFixed(1)}
           unit={day.waveHeight === null ? undefined : "מ׳"}
-          detail={seaStateLabel(day.waveHeight, day.windSpeedKn)}
+          detail={seaStateLabel(day.waveHeight, day.windMaxKn)}
         />
 
         <Reading
           icon={<Wind className="size-3.5" aria-hidden />}
           label="רוח"
-          value={String(day.windSpeedKn)}
+          value={`${day.windMinKn}-${day.windMaxKn}`}
           unit="קשר"
           detail={`מכיוון ${windDirectionShort(day.windDirection)}`}
         />
@@ -284,10 +408,10 @@ function DayPanel({ day }: { day: DailyForecast }) {
         <Reading
           icon={<Zap className="size-3.5" aria-hidden />}
           label="משבים"
-          value={String(day.windGustKn)}
+          value={`${day.gustMinKn}-${day.gustMaxKn}`}
           unit="קשר"
-          detail={gusty ? "פי 1.6 מהרוח" : undefined}
-          tone={gusty ? "text-warning" : undefined}
+          detail={day.gustMaxKn >= CALM_GUST_KN ? "מתחזק בצהריים" : undefined}
+          tone={day.gustMaxKn >= CALM_GUST_KN ? "text-warning" : undefined}
         />
 
         <Reading
@@ -297,11 +421,11 @@ function DayPanel({ day }: { day: DailyForecast }) {
         />
       </div>
 
+      {day.hours.length > 0 && <GustProfile hours={day.hours} />}
+
       <div className="flex flex-col gap-1.5 border-t border-[var(--hairline)] pt-2.5">
-        <VerdictLine verdict={sailingVerdict(day)} />
-        <p className="text-[11px] text-ink-subtle">
-          רוח, משבים וגלים — ערכי השיא הצפויים באותו יום
-        </p>
+        <VerdictLine verdict={dailyVerdict(day)} />
+        {day.hours.length > 0 && <CalmWindowLine hours={day.hours} />}
       </div>
     </div>
   );
@@ -350,16 +474,21 @@ export async function SailingConditions() {
   const today = weather.days[0];
   const outlook = weather.days.slice(1, PANELS);
 
+  // The dot on each tab answers one question across all five days — "is there
+  // a window on this day?" — so today's is drawn the same way as the rest. The
+  // verdict *line* inside today's panel still reports the live conditions,
+  // which is a different question and can honestly differ: blowing right now,
+  // and calm again by six.
   const tabs: DayTab[] = [
     {
       label: "היום",
       sub: today ? dayDate(today.date) : "",
-      tone: sailingVerdict(weather).tone,
+      tone: today ? dailyVerdict(today).tone : sailingVerdict(weather).tone,
     },
     ...outlook.map((day) => ({
       label: dayLabel(day.date),
       sub: dayDate(day.date),
-      tone: sailingVerdict(day).tone,
+      tone: dailyVerdict(day).tone,
     })),
   ];
 
@@ -368,7 +497,7 @@ export async function SailingConditions() {
       <TileLabel>{HEADING}</TileLabel>
 
       <ConditionsCarousel tabs={tabs}>
-        <TodayPanel weather={weather} />
+        <TodayPanel weather={weather} today={today} />
         {outlook.map((day) => (
           <DayPanel key={day.date} day={day} />
         ))}

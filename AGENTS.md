@@ -158,6 +158,21 @@ returns sunset as `2026-07-28T19:41` with the offset reported separately in
 for the same reason it must be careful: it renders from cache with no client
 fetch, so nothing gets a second chance to fix the clock in the browser.
 
+**Never summarise a sailing day as one number.** Tel Aviv runs a sea breeze:
+a July day is 1.4 knots at 06:00 and 7.7 knots with 22-knot gusts by 14:00. A
+daily maximum describes those four afternoon hours and mislabels the other
+twenty, so the card reads the hourly series, ranges wind and gust across
+daylight only, and names the calm window (`calmWindow()`). `dailyVerdict()`
+therefore asks "is there a stretch of this day I could go out in", not "how bad
+does this day get" — only a storm or a heavy sea overrides a window.
+
+Related: **gust *ratio* tests are useless on this coast.** Gusts run a steady
+2.8–3× the mean wind at every hour, including 02:00 in a dead calm, so
+`gustFactor >= 1.6` is true around the clock and separates nothing. Absolute
+gust is the signal; `CALM_GUST_KN` is the one number to move to retune the card.
+`isGusty()` still exists for the live "right now" verdict, where the ratio is at
+least describing a single moment.
+
 **`next/image` quality is an allowlist now.** Next 16 refuses any `quality` not
 named in `images.qualities`; the default list is `[75]` alone. The photo viewer
 asks for 90, so `next.config.ts` names it. Adding a new quality anywhere means

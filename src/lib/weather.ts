@@ -34,14 +34,27 @@ export type Weather = {
   days: DailyForecast[];
 };
 
+/** One hour of a day, in Tel Aviv local time. */
+export type HourReading = {
+  /** 0–23, local. The API is queried with `timezone=auto`, so the hour in the
+   *  response string is already the hour a person here would read off a clock. */
+  hour: number;
+  windSpeedKn: number;
+  windGustKn: number;
+};
+
 /**
  * One day of the outlook.
  *
- * Wind, gust and wave are the day's **maxima**, not an average. A day that
- * blows 25 knots for two hours is a day you do not plan a sail on, and an
- * average would hide exactly that. It does mean a future day reads harsher
- * than the same day will read once it becomes "now" — which is the right way
- * round for a planning card.
+ * Summarised **across daylight hours only**, and as a range rather than a
+ * single number. Neither is fussiness. On this coast the sea breeze builds
+ * around noon and dies at sunset: a July day here runs 1.4 knots at 06:00 and
+ * 7.7 knots with 22-knot gusts at 14:00. A daily maximum describes those four
+ * afternoon hours and mislabels the other twenty; including the night in the
+ * range drags the floor down to a calm nobody is awake for.
+ *
+ * The hourly readings are kept so the card can draw the shape of the day
+ * instead of asserting a verdict over it.
  */
 export type DailyForecast = {
   /** Local calendar date in Tel Aviv, "2026-07-29". */
@@ -49,14 +62,76 @@ export type DailyForecast = {
   weatherCode: number;
   tempMax: number;
   tempMin: number;
-  windSpeedKn: number;
-  windGustKn: number;
+  windMinKn: number;
+  windMaxKn: number;
+  gustMinKn: number;
+  gustMaxKn: number;
   windDirection: number;
   waveHeight: number | null;
   wavePeriod: number | null;
-  /** Real instant, already resolved out of Open-Meteo's bare local time. */
+  /** Real instants, already resolved out of Open-Meteo's bare local time. */
+  sunrise: string | null;
   sunset: string | null;
+  /** Sunrise to sunset, hour by hour. */
+  hours: HourReading[];
 };
+
+/**
+ * The gust a day is considered calm below.
+ *
+ * This is the one number to move if the card is too cautious or not cautious
+ * enough — it sets which hours the profile paints as calm and which stretch
+ * gets named as the window. It is deliberately a plain gust reading rather
+ * than a ratio: gusts on this coast run a steady 2.8–3× the mean wind at every
+ * hour of the day, including at 02:00 in a dead calm, so a ratio test is true
+ * around the clock and separates nothing.
+ */
+export const CALM_GUST_KN = 15;
+
+export type CalmWindow = { fromHour: number; toHour: number };
+
+/**
+ * The longest unbroken stretch of daylight hours with gusts under the limit —
+ * "you can go out between these times". Null when the day never settles.
+ */
+export function calmWindow(
+  hours: HourReading[],
+  limitKn: number = CALM_GUST_KN,
+): CalmWindow | null {
+  let best: CalmWindow | null = null;
+  let start: number | null = null;
+
+  const length = (window: CalmWindow) => window.toHour - window.fromHour;
+
+  for (const [index, reading] of hours.entries()) {
+    const calm = reading.windGustKn < limitKn;
+
+    if (calm && start === null) start = reading.hour;
+
+    // Close the run on the first gusty hour, or at the end of the day.
+    const next = hours[index + 1];
+    const ends = !calm || !next || next.hour !== reading.hour + 1;
+
+    if (start !== null && ends) {
+      const candidate = {
+        fromHour: start,
+        toHour: calm ? reading.hour + 1 : reading.hour,
+      };
+      if (length(candidate) > 0 && (!best || length(candidate) > length(best))) {
+        best = candidate;
+      }
+      start = null;
+    }
+  }
+
+  return best;
+}
+
+/** "06:00–11:00" */
+export function formatWindow(window: CalmWindow): string {
+  const pad = (hour: number) => `${String(hour % 24).padStart(2, "0")}:00`;
+  return `${pad(window.fromHour)}–${pad(window.toHour)}`;
+}
 
 const dayNameFormatter = new Intl.DateTimeFormat("he-IL", {
   weekday: "short",
@@ -204,9 +279,8 @@ export type Verdict = {
 };
 
 /**
- * The readings a verdict is drawn from — nothing more. Both `Weather` and
- * `DailyForecast` satisfy it structurally, so today and the outlook are judged
- * by one set of thresholds rather than two that can drift apart.
+ * The readings a verdict is drawn from — nothing more, so a caller holding
+ * only an instant's worth of data can still ask.
  */
 export type VerdictInput = Pick<
   Weather,
@@ -217,6 +291,9 @@ export type VerdictInput = Pick<
  * One line answering the only question the card exists to answer: can we go
  * out? Gust and chop are called out by name, because those are the two that a
  * glance at temperature and wave height alone will miss.
+ *
+ * This judges a **moment** — it is what the live reading on today's panel uses.
+ * A whole day is judged by `dailyVerdict`, which asks a different question.
  */
 export function sailingVerdict(weather: VerdictInput): Verdict {
   const { windSpeedKn, windGustKn, waveHeight, wavePeriod, weatherCode } = weather;
@@ -235,4 +312,31 @@ export function sailingVerdict(weather: VerdictInput): Verdict {
   if (windSpeedKn < 5) return { label: "כמעט בלי רוח", tone: "caution" };
 
   return { label: "תנאים טובים להפלגה", tone: "good" };
+}
+
+/**
+ * A whole day, judged by the question you actually ask of a forecast: *is
+ * there a stretch of this day I could go out in?*
+ *
+ * Not by the day's worst hour, which on a sea-breeze coast is always the
+ * afternoon and would condemn every day alike. A morning of glass followed by
+ * a blowy afternoon is a good day with a window in it, and that is what this
+ * says. Only conditions that rule out the whole day — storms, a heavy sea —
+ * override the window.
+ */
+export function dailyVerdict(day: DailyForecast): Verdict {
+  if (day.weatherCode >= 95)
+    return { label: "סופת רעמים — לא יוצאים", tone: "poor" };
+  if (day.gustMaxKn >= 30 || (day.waveHeight !== null && day.waveHeight >= 2))
+    return { label: "ים סוער — לא מומלץ", tone: "poor" };
+  if (isChoppy(day.waveHeight, day.wavePeriod))
+    return { label: "ים קצוץ — לא נוח", tone: "caution" };
+
+  const window = calmWindow(day.hours);
+  if (!window) return { label: "משבים לאורך כל היום", tone: "caution" };
+
+  const hours = window.toHour - window.fromHour;
+  if (hours < 3) return { label: "חלון קצר בלבד", tone: "caution" };
+
+  return { label: "יש חלון טוב להפלגה", tone: "good" };
 }
