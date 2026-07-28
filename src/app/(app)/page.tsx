@@ -1,8 +1,12 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { ImageIcon, Plane, Scale } from "lucide-react";
 import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
-import { SailingConditions } from "@/components/home/sailing-conditions";
+import {
+  SailingConditions,
+  SailingConditionsSkeleton,
+} from "@/components/home/sailing-conditions";
 import { QuickActions } from "@/components/home/quick-actions";
 import { PhotoLauncher } from "@/components/home/photo-launcher";
 import { MediaStrip } from "@/components/home/media-strip";
@@ -83,7 +87,11 @@ export default async function HomePage({
       {/* Conditions get the full width: four readings plus the verdict do not
           fit a half tile, and it is the first thing anyone opens the app for. */}
       <div className="mt-4 px-4">
-        <SailingConditions />
+        {/* Suspense so a cold forecast streams in rather than holding up the
+            whole page; on a warm cache it renders straight into the HTML. */}
+        <Suspense fallback={<SailingConditionsSkeleton />}>
+          <SailingConditions />
+        </Suspense>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-3 px-4">

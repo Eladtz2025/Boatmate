@@ -9,6 +9,12 @@ export const TEL_AVIV = {
   latitude: 32.0853,
   longitude: 34.7818,
   label: "תל אביב",
+  /**
+   * Pinned explicitly because this card is now rendered on the server, which
+   * runs in UTC. Anything derived from a clock has to name the zone or it comes
+   * out three hours wrong for the only people who will ever read it.
+   */
+  timeZone: "Asia/Jerusalem",
 } as const;
 
 export type Weather = {

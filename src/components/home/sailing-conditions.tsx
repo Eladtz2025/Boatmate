@@ -1,6 +1,4 @@
-"use client";
-
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   Cloud,
   CloudDrizzle,
@@ -27,8 +25,8 @@ import {
   sailingVerdict,
   seaStateLabel,
   windDirectionShort,
-  type Weather,
 } from "@/lib/weather";
+import { getConditions } from "@/lib/weather-data";
 import { cn } from "@/lib/cn";
 
 const ICONS = {
@@ -47,6 +45,8 @@ const VERDICT_TONE = {
   caution: "text-warning",
   poor: "text-danger",
 } as const;
+
+const HEADING = `תנאי הפלגה · ${TEL_AVIV.label}`;
 
 /** One of the four readings. Value and unit are separated so only the number
  *  carries the large weight — a wall of equally bold text reads as noise. */
@@ -82,51 +82,38 @@ function Reading({
   );
 }
 
+/** Shown by Suspense while the forecast is cold. On a warm cache — which is
+ *  almost always, the fetch holds for 15 minutes — this never appears. */
+export function SailingConditionsSkeleton() {
+  return (
+    <div className="card flex animate-pulse flex-col gap-3 p-4">
+      <TileLabel>{HEADING}</TileLabel>
+      <div className="h-8 w-20 rounded-lg bg-hull-750" />
+      <div className="grid grid-cols-2 gap-2">
+        {[0, 1, 2, 3].map((tile) => (
+          <div key={tile} className="h-20 rounded-2xl bg-hull-750" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * The sailing card: weather, waves, wind and gust for Tel Aviv in one place,
- * with the judgement call spelled out underneath rather than left to the
- * reader. Replaces both the old weather tile and the "next event" tile.
+ * with the judgement call spelled out underneath rather than left to the reader.
+ *
+ * A Server Component on purpose. As a client component it re-fetched on every
+ * mount, so the skeleton flashed on each visit to the home screen even when the
+ * data was already cached.
  */
-export function SailingConditions() {
-  const [weather, setWeather] = useState<Weather | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    fetch("/api/weather")
-      .then((response) => (response.ok ? response.json() : Promise.reject()))
-      .then((data: Weather) => {
-        if (!cancelled) setWeather(data);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (failed) {
-    return (
-      <div className="card flex flex-col gap-2 p-4">
-        <TileLabel>תנאי הפלגה · {TEL_AVIV.label}</TileLabel>
-        <p className="text-xs text-ink-subtle">לא זמין כרגע</p>
-      </div>
-    );
-  }
+export async function SailingConditions() {
+  const weather = await getConditions();
 
   if (!weather) {
     return (
-      <div className="card flex animate-pulse flex-col gap-3 p-4">
-        <TileLabel>תנאי הפלגה · {TEL_AVIV.label}</TileLabel>
-        <div className="h-8 w-20 rounded-lg bg-hull-750" />
-        <div className="grid grid-cols-2 gap-2">
-          {[0, 1, 2, 3].map((tile) => (
-            <div key={tile} className="h-20 rounded-2xl bg-hull-750" />
-          ))}
-        </div>
+      <div className="card flex flex-col gap-2 p-4">
+        <TileLabel>{HEADING}</TileLabel>
+        <p className="text-xs text-ink-subtle">לא זמין כרגע</p>
       </div>
     );
   }
@@ -137,11 +124,19 @@ export function SailingConditions() {
   const gusty = isGusty(weather.windSpeedKn, weather.windGustKn);
   const daylightLeft = hoursUntilSunset(weather.sunset);
 
+  const sunsetTime = weather.sunset
+    ? new Date(weather.sunset).toLocaleTimeString("he-IL", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: TEL_AVIV.timeZone,
+      })
+    : null;
+
   return (
     <div className="card flex flex-col gap-3 p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <TileLabel>תנאי הפלגה · {TEL_AVIV.label}</TileLabel>
+          <TileLabel>{HEADING}</TileLabel>
           <p className="mt-1 flex items-baseline gap-2">
             <span className="numeric text-3xl font-bold leading-none">
               {weather.temperature}°
@@ -211,16 +206,10 @@ export function SailingConditions() {
         </p>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-subtle">
-          {weather.sunset && (
+          {sunsetTime && (
             <span className="flex items-center gap-1">
               <Sunset className="size-3 shrink-0" aria-hidden />
-              שקיעה{" "}
-              <span className="numeric">
-                {new Date(weather.sunset).toLocaleTimeString("he-IL", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
+              שקיעה <span className="numeric">{sunsetTime}</span>
               {daylightLeft !== null && (
                 <>
                   {" · עוד "}

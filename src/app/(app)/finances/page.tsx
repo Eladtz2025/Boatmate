@@ -57,7 +57,9 @@ export default async function FinancesPage({
   ]);
 
   return (
-    <div className="mx-auto w-full max-w-lg pb-24">
+    // Bottom padding clears the floating + button, not just the nav. pb-24 left
+    // the last card's actions sitting under it, unreachable.
+    <div className="mx-auto w-full max-w-lg pb-[calc(var(--nav-height)+5.5rem)]">
       <PageHeader title="כספים" />
 
       <div className="px-4">

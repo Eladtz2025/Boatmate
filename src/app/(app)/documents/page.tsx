@@ -31,7 +31,8 @@ export default async function DocumentsPage({
   const documents = await getDocuments(boat.id);
 
   return (
-    <div className="mx-auto w-full max-w-lg pb-24">
+    // Bottom padding clears the floating + button, not just the nav.
+    <div className="mx-auto w-full max-w-lg pb-[calc(var(--nav-height)+5.5rem)]">
       <header className="flex items-baseline justify-between gap-3 px-4 pt-5 pb-3">
         <h1 className="text-2xl font-semibold text-ink">מסמכים</h1>
         {documents.length > 0 && (
