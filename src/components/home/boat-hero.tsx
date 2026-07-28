@@ -14,7 +14,11 @@ export function BoatHero({
   boatName: string;
 }) {
   return (
-    <div className="relative mx-4 aspect-[4/3] overflow-hidden rounded-[--radius-card] border border-[var(--hairline)]">
+    // rounded-card, not rounded-[--radius-card]: the bracket form is Tailwind
+    // v3 syntax that v4 no longer compiles, so the frame was rendering with
+    // square corners against rounded cards everywhere else. --radius-card lives
+    // in @theme, so v4 generates the utility from the token itself.
+    <div className="relative mx-4 aspect-[4/3] overflow-hidden rounded-card border border-[var(--hairline)]">
       <Image
         src={photoUrl ?? "/images/boat-hero.jpg"}
         alt={`תמונה של ${boatName}`}
