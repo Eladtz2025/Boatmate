@@ -62,17 +62,26 @@ begin
   if v_nir is null then
     v_nir := gen_random_uuid();
 
+    --    The token columns must be '' and never NULL. GoTrue scans them into
+    --    plain Go strings, so a NULL makes it fail with "converting NULL to
+    --    string is unsupported" and return a bodyless 500. listUsers() scans
+    --    the whole table, so one such row locks every partner out of sign-in —
+    --    which is exactly what happened the first time this script ran.
     insert into auth.users (
       id, instance_id, aud, role, email, encrypted_password,
       email_confirmed_at, created_at, updated_at,
-      raw_app_meta_data, raw_user_meta_data, is_sso_user, is_anonymous
+      raw_app_meta_data, raw_user_meta_data, is_sso_user, is_anonymous,
+      confirmation_token, recovery_token, email_change,
+      email_change_token_new, email_change_token_current,
+      phone_change, phone_change_token, reauthentication_token
     )
     values (
       v_nir, '00000000-0000-0000-0000-000000000000',
       'authenticated', 'authenticated', 'nirkah@gmail.com', '',
       now(), now(), now(),
       '{"provider":"email","providers":["email"]}'::jsonb,
-      '{"full_name":"ניר"}'::jsonb, false, false
+      '{"full_name":"ניר"}'::jsonb, false, false,
+      '', '', '', '', '', '', '', ''
     );
 
     insert into auth.identities (

@@ -55,7 +55,10 @@ export async function requestEntry(rawEmail: string): Promise<EntryResult> {
     page: 1,
     perPage: 1000,
   });
-  if (listError) return { ok: false, error: BROKEN };
+  if (listError) {
+    console.error("[login] listUsers failed:", listError);
+    return { ok: false, error: BROKEN };
+  }
 
   const user = list.users.find(
     (candidate) => candidate.email?.trim().toLowerCase() === email,
@@ -70,7 +73,10 @@ export async function requestEntry(rawEmail: string): Promise<EntryResult> {
     .limit(1)
     .maybeSingle();
 
-  if (membershipError) return { ok: false, error: BROKEN };
+  if (membershipError) {
+    console.error("[login] boat_members lookup failed:", membershipError);
+    return { ok: false, error: BROKEN };
+  }
   if (!membership) return { ok: false, error: REFUSED };
 
   const { data, error } = await admin.auth.admin.generateLink({
@@ -79,7 +85,15 @@ export async function requestEntry(rawEmail: string): Promise<EntryResult> {
   });
 
   const tokenHash = data?.properties?.hashed_token;
-  if (error || !tokenHash) return { ok: false, error: BROKEN };
+  if (error || !tokenHash) {
+    // Three unrelated failures used to land on the same silent BROKEN return,
+    // which left production with an opaque message and no trace to follow.
+    console.error(
+      "[login] generateLink failed:",
+      error ?? "no hashed_token in response",
+    );
+    return { ok: false, error: BROKEN };
+  }
 
   return { ok: true, tokenHash };
 }
