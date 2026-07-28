@@ -57,6 +57,7 @@ npx supabase gen types typescript --project-id <ref> --schema public
 | `src/lib/balance.ts` | **The balance engine.** Pure, unit-tested, integer-only |
 | `src/lib/data.ts` | Server-side reads, all RLS-scoped |
 | `src/lib/format.ts` | ILS + Hebrew date formatting |
+| `src/lib/gallery.ts` | Photo shape shared by the server reads and the client viewer |
 | `src/lib/constants.ts` | Hebrew labels for every category and enum |
 | `src/lib/weather.ts`, `src/lib/weather-data.ts` | Sailing conditions — pure presentation helpers, and the server-side Open-Meteo fetch |
 | `supabase/migrations/` | Schema, RLS policies, storage buckets |
@@ -156,6 +157,21 @@ returns sunset as `2026-07-28T19:41` with the offset reported separately in
 `TEL_AVIV.timeZone` is what formats it. The sailing card is a Server Component
 for the same reason it must be careful: it renders from cache with no client
 fetch, so nothing gets a second chance to fix the clock in the browser.
+
+**`next/image` quality is an allowlist now.** Next 16 refuses any `quality` not
+named in `images.qualities`; the default list is `[75]` alone. The photo viewer
+asks for 90, so `next.config.ts` names it. Adding a new quality anywhere means
+adding it there too — the optimiser answers 400, it does not fall back.
+
+**Never read `scrollLeft` in a horizontal carousel.** Under `dir="rtl"` it
+counts *down* from zero — the day carousel sits at `-1368` on its last panel —
+and browsers have historically disagreed about the sign. Both carousels (the
+sailing card's days, the photo viewer's photos) move with
+`scrollIntoView({ inline: "nearest" })`, which resolves against the writing
+direction, and read the active panel back with an `IntersectionObserver` rooted
+on the track, which is direction-agnostic. Native scroll-snap is also what keeps
+a swipe feeling native and leaves pinch-to-zoom working in the photo viewer; a
+hand-rolled drag handler takes both away.
 
 **Storage is private.** Buckets `receipts`, `documents`, `media`. Object paths
 are always `{boat_id}/...` — the first path segment is what the storage policies

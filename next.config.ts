@@ -33,6 +33,10 @@ const nextConfig: NextConfig = {
   // wrong workspace root; pin it to this project.
   turbopack: { root: import.meta.dirname },
   images: {
+    // Next 16 requires the allowlist: any quality not named here is refused by
+    // the optimiser. 75 is the default everywhere; 90 is the full-screen photo
+    // viewer, which exists precisely to show the photo at its best.
+    qualities: [75, 90],
     // Storage objects are served through short-lived signed URLs.
     remotePatterns: [
       {

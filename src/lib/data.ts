@@ -2,6 +2,8 @@ import "server-only";
 import { cache } from "react";
 import { createClient } from "./supabase/server";
 import { computeBalances, type ExpenseInput, type TransferInput } from "./balance";
+import { BUCKETS } from "./constants";
+import { HERO_PHOTO_ID, type GalleryPhoto } from "./gallery";
 
 /**
  * Server-side reads. Every query is scoped by RLS to boats the caller belongs
@@ -413,7 +415,8 @@ export const getOpenTasks = cache(async (boatId: string): Promise<TaskRow[]> => 
   }));
 });
 
-export const getRecentMedia = cache(async (boatId: string, limit = 6) => {
+/** Newest first. The cap is a sanity bound, not a page — the gallery shows all. */
+export const getMedia = cache(async (boatId: string, limit = 60) => {
   const supabase = await createClient();
   const { data } = await supabase
     .from("media")
@@ -424,6 +427,58 @@ export const getRecentMedia = cache(async (boatId: string, limit = 6) => {
 
   return data ?? [];
 });
+
+/**
+ * Every photo of the boat, hero first, for the full-screen viewer.
+ *
+ * URLs are signed in one batch rather than one call per photo: `createSignedUrl`
+ * is a network round trip each, and a gallery is the one place where that
+ * multiplies. A photo whose URL fails to sign is dropped rather than rendered
+ * as a broken frame.
+ */
+export const getGalleryPhotos = cache(
+  async (boatId: string, heroPath: string | null): Promise<GalleryPhoto[]> => {
+    const media = await getMedia(boatId);
+
+    // The hero is usually also a media row (promoted from the gallery); when it
+    // is, it must appear once, not twice.
+    const heroInMedia = media.some((item) => item.path === heroPath);
+    const paths = [
+      ...(heroPath && !heroInMedia ? [heroPath] : []),
+      ...media.map((item) => item.path),
+    ];
+    if (paths.length === 0) return [];
+
+    const urls = await getSignedUrls(BUCKETS.media, paths);
+
+    const photos: GalleryPhoto[] = [];
+
+    if (heroPath && !heroInMedia && urls[heroPath]) {
+      photos.push({
+        id: HERO_PHOTO_ID,
+        path: heroPath,
+        url: urls[heroPath],
+        caption: null,
+        isHero: true,
+      });
+    }
+
+    for (const item of media) {
+      const url = urls[item.path];
+      if (!url) continue;
+      photos.push({
+        id: item.id,
+        path: item.path,
+        url,
+        caption: item.caption,
+        isHero: item.path === heroPath,
+      });
+    }
+
+    // Whichever row is the hero leads, so tapping the big photo opens on it.
+    return photos.sort((a, b) => Number(b.isHero) - Number(a.isHero));
+  },
+);
 
 /* -------------------------------------------------------------------------- */
 /* Storage                                                                    */
@@ -439,4 +494,27 @@ export async function getSignedUrl(
   const supabase = await createClient();
   const { data } = await supabase.storage.from(bucket).createSignedUrl(path, expiresIn);
   return data?.signedUrl ?? null;
+}
+
+/**
+ * The same, for a list — one request instead of one per path. Returns a
+ * path → URL map; paths that failed to sign are simply absent.
+ */
+export async function getSignedUrls(
+  bucket: string,
+  paths: string[],
+  expiresIn = 3600,
+): Promise<Record<string, string>> {
+  if (paths.length === 0) return {};
+
+  const supabase = await createClient();
+  const { data } = await supabase.storage
+    .from(bucket)
+    .createSignedUrls(paths, expiresIn);
+
+  const urls: Record<string, string> = {};
+  for (const entry of data ?? []) {
+    if (entry.path && entry.signedUrl) urls[entry.path] = entry.signedUrl;
+  }
+  return urls;
 }

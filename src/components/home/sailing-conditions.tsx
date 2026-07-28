@@ -19,15 +19,21 @@ import {
 import { TileLabel } from "@/components/ui/card";
 import {
   TEL_AVIV,
+  dayDate,
+  dayLabel,
   describeWeather,
   hoursUntilSunset,
   isGusty,
   sailingVerdict,
   seaStateLabel,
   windDirectionShort,
+  type DailyForecast,
+  type Verdict,
+  type Weather,
 } from "@/lib/weather";
 import { getConditions } from "@/lib/weather-data";
 import { cn } from "@/lib/cn";
+import { ConditionsCarousel, type DayTab } from "./conditions-carousel";
 
 const ICONS = {
   sun: Sun,
@@ -47,6 +53,21 @@ const VERDICT_TONE = {
 } as const;
 
 const HEADING = `תנאי הפלגה · ${TEL_AVIV.label}`;
+
+/** How many days the carousel pages through — today plus the next four. */
+const PANELS = 5;
+
+/** Named zone, always: the server renders this in UTC. */
+function formatClock(instant: string | null): string | null {
+  if (!instant) return null;
+  const date = new Date(instant);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString("he-IL", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: TEL_AVIV.timeZone,
+  });
+}
 
 /** One of the four readings. Value and unit are separated so only the number
  *  carries the large weight — a wall of equally bold text reads as noise. */
@@ -82,75 +103,77 @@ function Reading({
   );
 }
 
-/** Shown by Suspense while the forecast is cold. On a warm cache — which is
- *  almost always, the fetch holds for 15 minutes — this never appears. */
-export function SailingConditionsSkeleton() {
+/** Big temperature, condition, weather glyph — shared by every panel. */
+function PanelHeader({
+  temperature,
+  weatherCode,
+  secondary,
+}: {
+  temperature: number;
+  weatherCode: number;
+  secondary?: ReactNode;
+}) {
+  const { label, icon } = describeWeather(weatherCode);
+  const Icon = ICONS[icon as keyof typeof ICONS] ?? Sun;
+
   return (
-    <div className="card flex animate-pulse flex-col gap-3 p-4">
-      <TileLabel>{HEADING}</TileLabel>
-      <div className="h-8 w-20 rounded-lg bg-hull-750" />
-      <div className="grid grid-cols-2 gap-2">
-        {[0, 1, 2, 3].map((tile) => (
-          <div key={tile} className="h-20 rounded-2xl bg-hull-750" />
-        ))}
+    <div className="flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <p className="flex items-baseline gap-2">
+          <span className="numeric text-3xl font-bold leading-none">
+            {temperature}°
+          </span>
+          <span className="truncate text-sm text-ink-muted">{label}</span>
+        </p>
+        {secondary && (
+          <p className="mt-0.5 text-[11px] text-ink-subtle">{secondary}</p>
+        )}
       </div>
+      <Icon className="size-8 shrink-0 text-warning" aria-hidden />
     </div>
   );
 }
 
-/**
- * The sailing card: weather, waves, wind and gust for Tel Aviv in one place,
- * with the judgement call spelled out underneath rather than left to the reader.
- *
- * A Server Component on purpose. As a client component it re-fetched on every
- * mount, so the skeleton flashed on each visit to the home screen even when the
- * data was already cached.
- */
-export async function SailingConditions() {
-  const weather = await getConditions();
+/** The verdict line every panel closes with. */
+function VerdictLine({ verdict }: { verdict: Verdict }) {
+  return (
+    <p
+      className={cn(
+        "flex items-center gap-1.5 text-xs font-medium",
+        VERDICT_TONE[verdict.tone],
+      )}
+    >
+      {verdict.tone === "good" ? (
+        <Waves className="size-3.5 shrink-0" aria-hidden />
+      ) : (
+        <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+      )}
+      {verdict.label}
+    </p>
+  );
+}
 
-  if (!weather) {
-    return (
-      <div className="card flex flex-col gap-2 p-4">
-        <TileLabel>{HEADING}</TileLabel>
-        <p className="text-xs text-ink-subtle">לא זמין כרגע</p>
-      </div>
-    );
-  }
-
-  const { label, icon } = describeWeather(weather.weatherCode);
-  const Icon = ICONS[icon as keyof typeof ICONS] ?? Sun;
-  const verdict = sailingVerdict(weather);
+/** Now: live readings, and the two extras only the current hour has —
+ *  visibility and how much daylight is left to use. */
+function TodayPanel({ weather }: { weather: Weather }) {
   const gusty = isGusty(weather.windSpeedKn, weather.windGustKn);
   const daylightLeft = hoursUntilSunset(weather.sunset);
-
-  const sunsetTime = weather.sunset
-    ? new Date(weather.sunset).toLocaleTimeString("he-IL", {
-        hour: "2-digit",
-        minute: "2-digit",
-        timeZone: TEL_AVIV.timeZone,
-      })
-    : null;
+  const sunsetTime = formatClock(weather.sunset);
 
   return (
-    <div className="card flex flex-col gap-3 p-4">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <TileLabel>{HEADING}</TileLabel>
-          <p className="mt-1 flex items-baseline gap-2">
-            <span className="numeric text-3xl font-bold leading-none">
-              {weather.temperature}°
-            </span>
-            <span className="truncate text-sm text-ink-muted">{label}</span>
-          </p>
-          {weather.apparentTemperature !== weather.temperature && (
-            <p className="mt-0.5 text-[11px] text-ink-subtle">
-              מרגיש כמו <span className="numeric">{weather.apparentTemperature}°</span>
-            </p>
-          )}
-        </div>
-        <Icon className="size-8 shrink-0 text-warning" aria-hidden />
-      </div>
+    <div className="flex flex-col gap-3">
+      <PanelHeader
+        temperature={weather.temperature}
+        weatherCode={weather.weatherCode}
+        secondary={
+          weather.apparentTemperature !== weather.temperature ? (
+            <>
+              מרגיש כמו{" "}
+              <span className="numeric">{weather.apparentTemperature}°</span>
+            </>
+          ) : undefined
+        }
+      />
 
       <div className="grid grid-cols-2 gap-2">
         <Reading
@@ -191,19 +214,7 @@ export async function SailingConditions() {
       </div>
 
       <div className="flex flex-col gap-1.5 border-t border-[var(--hairline)] pt-2.5">
-        <p
-          className={cn(
-            "flex items-center gap-1.5 text-xs font-medium",
-            VERDICT_TONE[verdict.tone],
-          )}
-        >
-          {verdict.tone === "good" ? (
-            <Waves className="size-3.5 shrink-0" aria-hidden />
-          ) : (
-            <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
-          )}
-          {verdict.label}
-        </p>
+        <VerdictLine verdict={sailingVerdict(weather)} />
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-subtle">
           {sunsetTime && (
@@ -227,6 +238,141 @@ export async function SailingConditions() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A day ahead. Same rhythm as today so swiping does not reshuffle the layout,
+ * but every reading here is the day's peak rather than a reading at an instant
+ * — see `DailyForecast`. The footer says so, because a 22-knot tile means
+ * something quite different when it is a daily maximum.
+ */
+function DayPanel({ day }: { day: DailyForecast }) {
+  const gusty = isGusty(day.windSpeedKn, day.windGustKn);
+  const sunsetTime = formatClock(day.sunset);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <PanelHeader
+        temperature={day.tempMax}
+        weatherCode={day.weatherCode}
+        secondary={
+          <>
+            מינימום <span className="numeric">{day.tempMin}°</span>
+          </>
+        }
+      />
+
+      <div className="grid grid-cols-2 gap-2">
+        <Reading
+          icon={<Waves className="size-3.5" aria-hidden />}
+          label="גובה גלים"
+          value={day.waveHeight === null ? "—" : day.waveHeight.toFixed(1)}
+          unit={day.waveHeight === null ? undefined : "מ׳"}
+          detail={seaStateLabel(day.waveHeight, day.windSpeedKn)}
+        />
+
+        <Reading
+          icon={<Wind className="size-3.5" aria-hidden />}
+          label="רוח"
+          value={String(day.windSpeedKn)}
+          unit="קשר"
+          detail={`מכיוון ${windDirectionShort(day.windDirection)}`}
+        />
+
+        <Reading
+          icon={<Zap className="size-3.5" aria-hidden />}
+          label="משבים"
+          value={String(day.windGustKn)}
+          unit="קשר"
+          detail={gusty ? "פי 1.6 מהרוח" : undefined}
+          tone={gusty ? "text-warning" : undefined}
+        />
+
+        <Reading
+          icon={<Sunset className="size-3.5" aria-hidden />}
+          label="שקיעה"
+          value={sunsetTime ?? "—"}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5 border-t border-[var(--hairline)] pt-2.5">
+        <VerdictLine verdict={sailingVerdict(day)} />
+        <p className="text-[11px] text-ink-subtle">
+          רוח, משבים וגלים — ערכי השיא הצפויים באותו יום
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Shown by Suspense while the forecast is cold. On a warm cache — which is
+ *  almost always, the fetch holds for 15 minutes — this never appears. */
+export function SailingConditionsSkeleton() {
+  return (
+    <div className="card flex animate-pulse flex-col gap-3 p-4">
+      <TileLabel>{HEADING}</TileLabel>
+      <div className="h-11 rounded-2xl bg-hull-850" />
+      <div className="h-8 w-20 rounded-lg bg-hull-750" />
+      <div className="grid grid-cols-2 gap-2">
+        {[0, 1, 2, 3].map((tile) => (
+          <div key={tile} className="h-20 rounded-2xl bg-hull-750" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The sailing card: weather, waves, wind and gust for Tel Aviv in one place,
+ * with the judgement call spelled out underneath rather than left to the
+ * reader — today, and swipeable through the next four days.
+ *
+ * A Server Component on purpose. As a client component it re-fetched on every
+ * mount, so the skeleton flashed on each visit to the home screen even when the
+ * data was already cached. Only the paging is client-side.
+ */
+export async function SailingConditions() {
+  const weather = await getConditions();
+
+  if (!weather) {
+    return (
+      <div className="card flex flex-col gap-2 p-4">
+        <TileLabel>{HEADING}</TileLabel>
+        <p className="text-xs text-ink-subtle">לא זמין כרגע</p>
+      </div>
+    );
+  }
+
+  // days[0] is today, and its aggregates are not what the first panel shows —
+  // that one renders the live readings. Everything after it is the outlook.
+  const today = weather.days[0];
+  const outlook = weather.days.slice(1, PANELS);
+
+  const tabs: DayTab[] = [
+    {
+      label: "היום",
+      sub: today ? dayDate(today.date) : "",
+      tone: sailingVerdict(weather).tone,
+    },
+    ...outlook.map((day) => ({
+      label: dayLabel(day.date),
+      sub: dayDate(day.date),
+      tone: sailingVerdict(day).tone,
+    })),
+  ];
+
+  return (
+    <div className="card flex flex-col gap-3 p-4">
+      <TileLabel>{HEADING}</TileLabel>
+
+      <ConditionsCarousel tabs={tabs}>
+        <TodayPanel weather={weather} />
+        {outlook.map((day) => (
+          <DayPanel key={day.date} day={day} />
+        ))}
+      </ConditionsCarousel>
     </div>
   );
 }

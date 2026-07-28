@@ -30,7 +30,71 @@ export type Weather = {
   wavePeriod: number | null;
   waveDirection: number | null;
   seaTemperature: number | null;
+  /** Today first, then the following days. Powers the card's day carousel. */
+  days: DailyForecast[];
 };
+
+/**
+ * One day of the outlook.
+ *
+ * Wind, gust and wave are the day's **maxima**, not an average. A day that
+ * blows 25 knots for two hours is a day you do not plan a sail on, and an
+ * average would hide exactly that. It does mean a future day reads harsher
+ * than the same day will read once it becomes "now" — which is the right way
+ * round for a planning card.
+ */
+export type DailyForecast = {
+  /** Local calendar date in Tel Aviv, "2026-07-29". */
+  date: string;
+  weatherCode: number;
+  tempMax: number;
+  tempMin: number;
+  windSpeedKn: number;
+  windGustKn: number;
+  windDirection: number;
+  waveHeight: number | null;
+  wavePeriod: number | null;
+  /** Real instant, already resolved out of Open-Meteo's bare local time. */
+  sunset: string | null;
+};
+
+const dayNameFormatter = new Intl.DateTimeFormat("he-IL", {
+  weekday: "short",
+  timeZone: TEL_AVIV.timeZone,
+});
+
+const dayDateFormatter = new Intl.DateTimeFormat("he-IL", {
+  day: "numeric",
+  month: "numeric",
+  timeZone: TEL_AVIV.timeZone,
+});
+
+/** Today's date in Tel Aviv as "2026-07-28" — en-CA is ISO order. */
+function telAvivToday(now: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: TEL_AVIV.timeZone,
+  }).format(now);
+}
+
+/**
+ * "היום" / "מחר" / "יום ג׳" for a forecast day. The zone is pinned for the
+ * same reason everything else clock-derived here is: the server runs in UTC,
+ * and a bare weekday would flip a day either side of midnight Israel time.
+ */
+export function dayLabel(date: string, now: Date = new Date()): string {
+  const today = telAvivToday(now);
+  if (date === today) return "היום";
+
+  const tomorrow = telAvivToday(new Date(now.getTime() + 86_400_000));
+  if (date === tomorrow) return "מחר";
+
+  return dayNameFormatter.format(new Date(`${date}T12:00:00Z`));
+}
+
+/** "29.7" — the secondary line under the day name. */
+export function dayDate(date: string): string {
+  return dayDateFormatter.format(new Date(`${date}T12:00:00Z`));
+}
 
 /** WMO weather codes → a Hebrew label and a lucide icon name. */
 export function describeWeather(code: number): { label: string; icon: string } {
@@ -140,11 +204,21 @@ export type Verdict = {
 };
 
 /**
+ * The readings a verdict is drawn from — nothing more. Both `Weather` and
+ * `DailyForecast` satisfy it structurally, so today and the outlook are judged
+ * by one set of thresholds rather than two that can drift apart.
+ */
+export type VerdictInput = Pick<
+  Weather,
+  "windSpeedKn" | "windGustKn" | "waveHeight" | "wavePeriod" | "weatherCode"
+>;
+
+/**
  * One line answering the only question the card exists to answer: can we go
  * out? Gust and chop are called out by name, because those are the two that a
  * glance at temperature and wave height alone will miss.
  */
-export function sailingVerdict(weather: Weather): Verdict {
+export function sailingVerdict(weather: VerdictInput): Verdict {
   const { windSpeedKn, windGustKn, waveHeight, wavePeriod, weatherCode } = weather;
 
   if (weatherCode >= 95) return { label: "סופת רעמים — לא יוצאים", tone: "poor" };
