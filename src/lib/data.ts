@@ -30,12 +30,26 @@ export type Boat = {
   longitude: number | null;
 };
 
-export const getCurrentUser = cache(async () => {
+export type CurrentUser = { id: string; email: string | null };
+
+/**
+ * Identity of the caller, taken from the verified JWT rather than from a user
+ * lookup. getUser() would cost a network round trip to the Auth server on every
+ * render; the id and the address are both claims already carried in the token,
+ * and proxy.ts has verified its signature. Nothing here needs a fresher user
+ * record than that.
+ */
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user;
+  const { data } = await supabase.auth.getClaims();
+
+  const claims = data?.claims;
+  if (!claims?.sub) return null;
+
+  return {
+    id: claims.sub,
+    email: typeof claims.email === "string" ? claims.email : null,
+  };
 });
 
 /** The caller's boat. MVP assumes one boat per user; the newest wins. */

@@ -7,11 +7,12 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login");
+  // Fired together, not in sequence: these used to be two awaits back to back,
+  // so every tab tap paid both round trips end to end before anything rendered.
+  const [user, boat] = await Promise.all([getCurrentUser(), getBoat()]);
 
+  if (!user) redirect("/login");
   // A signed-in user with no boat yet has nothing to look at.
-  const boat = await getBoat();
   if (!boat) redirect("/onboarding");
 
   return (

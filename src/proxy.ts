@@ -15,7 +15,7 @@ export async function proxy(request: NextRequest) {
       getAll() {
         return request.cookies.getAll();
       },
-      setAll(cookiesToSet) {
+      setAll(cookiesToSet, headers) {
         for (const { name, value } of cookiesToSet) {
           request.cookies.set(name, value);
         }
@@ -23,14 +23,27 @@ export async function proxy(request: NextRequest) {
         for (const { name, value, options } of cookiesToSet) {
           response.cookies.set(name, value, options);
         }
+        // These are no-store/no-cache headers, and they are not optional: a
+        // response that carries a fresh auth cookie must never be cached by a
+        // CDN, or one partner's session token gets served to another. We sit
+        // behind Vercel's edge, so dropping them is a real hazard.
+        for (const [key, value] of Object.entries(headers)) {
+          response.headers.set(key, value);
+        }
       },
     },
   });
 
-  // Do not remove: this call is what refreshes an expired session.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Do not remove, and do not put anything between createServerClient and this
+  // call — it is what refreshes an expired session.
+  //
+  // getClaims, not getUser: getUser sends a request to the Auth server for
+  // every single JWT, which put a full network round trip in front of every
+  // page and every server action. This project signs tokens with an asymmetric
+  // key (ES256), so getClaims verifies the signature locally against a cached
+  // JWKS instead. Supabase documents it as the preferred way to protect pages.
+  const { data } = await supabase.auth.getClaims();
+  const isSignedIn = Boolean(data?.claims?.sub);
 
   const { pathname } = request.nextUrl;
   const isPublic =
@@ -38,14 +51,14 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith("/auth") ||
     pathname.startsWith("/onboarding");
 
-  if (!user && !isPublic) {
+  if (!isSignedIn && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
   }
 
-  if (user && pathname.startsWith("/login")) {
+  if (isSignedIn && pathname.startsWith("/login")) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
     url.search = "";
