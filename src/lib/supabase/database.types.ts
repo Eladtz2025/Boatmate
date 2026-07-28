@@ -732,6 +732,10 @@ export type Database = {
       }
       is_boat_member: { Args: { p_boat_id: string }; Returns: boolean }
       my_boat_ids: { Args: never; Returns: string[] }
+      partner_for_email: {
+        Args: { p_email: string }
+        Returns: { user_id: string; user_email: string }[]
+      }
     }
     Enums: {
       [_ in never]: never

@@ -48,40 +48,29 @@ export async function requestEntry(rawEmail: string): Promise<EntryResult> {
     return { ok: false, error: "הכניסה לא מוגדרת בשרת. פנו למנהל הסירה." };
   }
 
-  // auth.users is not reachable through PostgREST, so the admin API is the
-  // only way to resolve an email to a user. A boat has a handful of partners,
-  // so one page holds every account that will ever exist here.
-  const { data: list, error: listError } = await admin.auth.admin.listUsers({
-    page: 1,
-    perPage: 1000,
-  });
-  if (listError) {
-    console.error("[login] listUsers failed:", listError);
-    return { ok: false, error: BROKEN };
-  }
-
-  const user = list.users.find(
-    (candidate) => candidate.email?.trim().toLowerCase() === email,
+  // Address and membership resolve in one indexed lookup. This deliberately
+  // does *not* go through auth.admin.listUsers: that pulls every account
+  // through GoTrue, so a single row it cannot serialise returns 500 and locks
+  // out every partner at once. It has happened. Reading the row in SQL touches
+  // only the address being signed in with.
+  const { data: rows, error: lookupError } = await admin.rpc(
+    "partner_for_email",
+    { p_email: email },
   );
-  if (!user?.email) return { ok: false, error: REFUSED };
 
-  // Service role, so this reads straight through RLS.
-  const { data: membership, error: membershipError } = await admin
-    .from("boat_members")
-    .select("boat_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .maybeSingle();
-
-  if (membershipError) {
-    console.error("[login] boat_members lookup failed:", membershipError);
+  if (lookupError) {
+    console.error("[login] partner_for_email failed:", lookupError);
     return { ok: false, error: BROKEN };
   }
-  if (!membership) return { ok: false, error: REFUSED };
+
+  // No row means either no account or an account on no boat. Both are REFUSED,
+  // and the function cannot tell them apart on purpose.
+  const partner = rows?.[0];
+  if (!partner?.user_email) return { ok: false, error: REFUSED };
 
   const { data, error } = await admin.auth.admin.generateLink({
     type: "magiclink",
-    email: user.email,
+    email: partner.user_email,
   });
 
   const tokenHash = data?.properties?.hashed_token;
