@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { CalendarClock, ImageIcon, Plane, Scale } from "lucide-react";
+import { ImageIcon, Plane, Scale } from "lucide-react";
 import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
-import { WeatherCard } from "@/components/home/weather-card";
+import { SailingConditions } from "@/components/home/sailing-conditions";
 import { QuickActions } from "@/components/home/quick-actions";
 import { PhotoLauncher } from "@/components/home/photo-launcher";
 import { MediaStrip } from "@/components/home/media-strip";
@@ -10,20 +10,13 @@ import { TasksCard } from "@/components/home/tasks-card";
 import { Card, TileLabel } from "@/components/ui/card";
 import { headlineSettlement } from "@/lib/balance";
 import { BUCKETS } from "@/lib/constants";
-import {
-  formatAgorotAbs,
-  formatDateRange,
-  formatDayMonth,
-  formatTime,
-  daysUntil,
-} from "@/lib/format";
+import { formatAgorotAbs, formatDateRange, daysUntil } from "@/lib/format";
 import {
   getBalances,
   getBoat,
   getDocuments,
   getMemberNames,
   getNextArrival,
-  getNextEvent,
   getOpenTasks,
   getRecentMedia,
   getSignedUrl,
@@ -43,11 +36,10 @@ export default async function HomePage({
   const [params, boat] = await Promise.all([searchParams, getBoat()]);
   if (!boat) return null; // layout redirects to /onboarding
 
-  const [balances, names, nextEvent, arrival, tasks, media, documents, heroUrl] =
+  const [balances, names, arrival, tasks, media, documents, heroUrl] =
     await Promise.all([
       getBalances(boat.id),
       getMemberNames(boat.id),
-      getNextEvent(boat.id),
       getNextArrival(boat.id),
       getOpenTasks(boat.id),
       getRecentMedia(boat.id),
@@ -88,32 +80,13 @@ export default async function HomePage({
         boatName={boat.name}
       />
 
-      <div className="mt-4 grid grid-cols-2 gap-3 px-4">
-        <WeatherCard latitude={boat.latitude} longitude={boat.longitude} />
+      {/* Conditions get the full width: four readings plus the verdict do not
+          fit a half tile, and it is the first thing anyone opens the app for. */}
+      <div className="mt-4 px-4">
+        <SailingConditions />
+      </div>
 
-        {/* Next event */}
-        <Card className="flex flex-col gap-2">
-          <TileLabel>האירוע הבא</TileLabel>
-          {nextEvent ? (
-            <>
-              <p className="line-clamp-2 text-sm font-semibold leading-snug">
-                {nextEvent.title}
-              </p>
-              <p className="numeric mt-auto text-xs text-ink-muted">
-                {formatDayMonth(nextEvent.startsAt)}
-              </p>
-              {!nextEvent.allDay && (
-                <p className="numeric flex items-center gap-1 text-xs text-teal-400">
-                  <CalendarClock className="size-3.5" aria-hidden />
-                  {formatTime(nextEvent.startsAt)}
-                </p>
-              )}
-            </>
-          ) : (
-            <p className="text-xs text-ink-subtle">אין אירועים קרובים</p>
-          )}
-        </Card>
-
+      <div className="mt-3 grid grid-cols-2 gap-3 px-4">
         {/* Partner arrival */}
         <Card className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
