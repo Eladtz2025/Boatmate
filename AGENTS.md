@@ -49,15 +49,18 @@ npx supabase gen types typescript --project-id <ref> --schema public
 | Path | Purpose |
 | --- | --- |
 | `src/app/(app)/` | The four authenticated tabs: home, finances, documents, calendar |
-| `src/app/login/`, `src/app/auth/` | Magic-link sign-in and the OTP callback |
+| `src/app/login/`, `src/app/auth/` | Email-only sign-in and the OTP callback |
 | `src/app/actions.ts` | Every server action (all mutations live here) |
+| `src/proxy.ts` | The auth gate. Runs on every request that is not a static asset |
 | `src/components/ui/` | Design-system primitives — Card, Button, Sheet, Field, Chip, Badge, Avatar |
 | `src/components/nav/` | Bottom tab bar and page headers |
 | `src/lib/balance.ts` | **The balance engine.** Pure, unit-tested, integer-only |
 | `src/lib/data.ts` | Server-side reads, all RLS-scoped |
 | `src/lib/format.ts` | ILS + Hebrew date formatting |
 | `src/lib/constants.ts` | Hebrew labels for every category and enum |
+| `src/lib/weather.ts`, `src/lib/weather-data.ts` | Sailing conditions — pure presentation helpers, and the server-side Open-Meteo fetch |
 | `supabase/migrations/` | Schema, RLS policies, storage buckets |
+| `supabase/scripts/` | One-off operational SQL. Run by hand, never by `db push` |
 
 ## Conventions that matter
 
@@ -83,7 +86,7 @@ constraint trigger, which is why expenses are always created through the
 
 **Sign-in is email-only, by choice.** The login screen takes an address and
 nothing else — no password, no emailed code. `requestEntry` (`src/app/login/actions.ts`)
-checks the address against `boat_members` using the service role, then calls
+resolves the address through the `partner_for_email` RPC, then calls
 `auth.admin.generateLink` and returns only the `hashed_token`; the browser
 redeems it with `verifyOtp`. **Anyone who knows a partner's email can sign in as
 that partner.** That is an accepted trade-off for a boat shared by a few people
@@ -92,6 +95,39 @@ who trust each other, not a bug to quietly patch. The membership check must stay
 address. No email is sent, which is what keeps this clear of Supabase's built-in
 SMTP limit — 2 per hour, project-wide, shared by every partner. That limit is
 what made the old magic-link screen unusable.
+
+**Never resolve an address with `auth.admin.listUsers`.** It pulls the whole
+user table through GoTrue, so a single row GoTrue cannot serialise returns a
+bodyless 500 and locks out *every* partner, not just the one with the bad row.
+That is not hypothetical — it happened, and it cost an afternoon. Membership is
+resolved in SQL by `partner_for_email` (`SECURITY DEFINER`, `EXECUTE` granted to
+`service_role` alone, because a function that answers "is this address a
+partner?" is exactly the directory the vague refusal message avoids handing
+out). Postgres reads NULL columns without complaint; only GoTrue's marshalling
+objects, so the SQL path is unaffected by a malformed row.
+
+**Hand-written `auth.users` rows must set the token columns to `''`.**
+`confirmation_token`, `recovery_token`, `email_change`,
+`email_change_token_new`, `email_change_token_current`, `phone_change`,
+`phone_change_token`, `reauthentication_token` — all of them, never NULL. GoTrue
+scans them into plain Go strings and dies on NULL with "converting NULL to
+string is unsupported". `supabase/scripts/reset-and-add-nir.sql` shows the full
+insert, including the matching `auth.identities` row without which the token
+will not resolve.
+
+**Read the session with `getClaims()`, not `getUser()`.** `getUser()` sends a
+request to the Auth server for every JWT, which put a full network round trip in
+front of every page and every server action. This project signs tokens with an
+asymmetric key (ES256), so `getClaims()` verifies the signature locally against
+a cached JWKS. `sub` and `email` are claims already in the token, which is
+everything `getCurrentUser()` exposes. Supabase documents this as the preferred
+way to protect pages.
+
+**`setAll` in `proxy.ts` takes a second argument, and it is not optional.**
+`@supabase/ssr` passes `Cache-Control: no-store`, `Expires: 0` and `Pragma:
+no-cache` alongside any auth cookie it sets. Dropping them lets a CDN cache a
+response carrying a session token and serve it to somebody else — and we sit
+behind Vercel's edge. Forward them onto the response.
 
 **Sign-in completes in the browser, never on the server.** A Server Component
 cannot write cookies — `createClient()` in `server.ts` swallows the failure so
@@ -111,6 +147,15 @@ build (`new URL` threw) and every browser request (headers must be ISO-8859-1).
 gate. Every RLS policy funnels through `is_boat_member(boat_id)`, a
 `SECURITY DEFINER` function that exists so policies on `boat_members` don't
 recurse into themselves.
+
+**The server runs in UTC; name the timezone on anything clock-derived.** The app
+is read by people in Israel, and most of what it renders is server rendered, so
+a bare `new Date(...)` on a local-time string is silently hours off. Open-Meteo
+returns sunset as `2026-07-28T19:41` with the offset reported separately in
+`utc_offset_seconds` — `getConditions()` resolves it to a real instant, and
+`TEL_AVIV.timeZone` is what formats it. The sailing card is a Server Component
+for the same reason it must be careful: it renders from cache with no client
+fetch, so nothing gets a second chance to fix the clock in the browser.
 
 **Storage is private.** Buckets `receipts`, `documents`, `media`. Object paths
 are always `{boat_id}/...` — the first path segment is what the storage policies
@@ -147,4 +192,14 @@ Deep navy hull, teal running-light accent. Tokens are defined once in
 
 Cards use the `card` class (navy surface, hairline border, 20px radius). Tap
 targets are at least 44px. Pages are padded `px-4` and leave `pb-24` clear for
-the fixed bottom nav.
+the fixed bottom nav — except the three screens carrying a floating `+` button
+(finances, documents, calendar), which need
+`pb-[calc(var(--nav-height)+5.5rem)]`. `pb-24` is shorter than the button's
+reach, which left the last card's actions sitting underneath it, untappable.
+
+**Tailwind v4 dropped the `[--var]` shorthand.** `rounded-[--radius-card]` is v3
+syntax and v4 compiles it to *nothing* — no rule is emitted, no warning is
+given, and the element silently loses the style. Tokens declared in `@theme`
+generate their own utilities, so write `rounded-card`; anywhere else use the
+full `[var(--x)]` form, as `border-[var(--hairline)]` already does. This cost
+the boat photo its rounded corners for a while, and it was invisible in review.
