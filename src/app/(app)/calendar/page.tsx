@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { CalendarDays } from "lucide-react";
 import { getBoat, getCalendarItems, getMembers } from "@/lib/data";
+import { topUpOccurrences } from "@/lib/recurring";
 import { toDateInput } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CalendarScreen, type CalendarView } from "@/components/calendar/calendar-screen";
@@ -39,6 +40,11 @@ export default async function CalendarPage({
       </div>
     );
   }
+
+  // This window reaches twelve months forward while the occurrence horizon only
+  // reaches 120 days, so the calendar is where a stale horizon shows first — an
+  // empty autumn that looks like a settled autumn.
+  await topUpOccurrences(boat.id);
 
   const now = new Date();
   const from = new Date(now.getFullYear(), now.getMonth() - 3, 1);

@@ -11,7 +11,52 @@ import { HERO_PHOTO_ID, type GalleryPhoto } from "./gallery";
  *
  * `cache()` dedupes within a single render pass — the home screen asks for the
  * boat and the crew from several components without re-querying.
+ *
+ * Every read goes through `rows()` or `maybeRow()`, and that is not decoration.
+ * These functions used to destructure `{ data }` alone and end in `data ?? []`,
+ * which mapped *failure* onto *empty* — the app had no way to say "I don't
+ * know". A dropped connection during `getExpenses` rendered the home screen as
+ * "כולם מאוזנים": a database outage telling three partners they were square.
+ * Throwing hands the failure to the nearest error boundary, which says so.
  */
+
+type Failure = { message: string } | null;
+
+class ReadError extends Error {
+  constructor(what: string, cause: string) {
+    super(`לא הצלחנו לקרוא ${what}: ${cause}`);
+    this.name = "ReadError";
+  }
+}
+
+/**
+ * Rows from a list query. An empty list means the boat genuinely has none;
+ * a failed query throws rather than impersonating one.
+ */
+function rows<T>(
+  result: { data: T[] | null; error: Failure },
+  what: string,
+): T[] {
+  if (result.error) throw new ReadError(what, result.error.message);
+  return result.data ?? [];
+}
+
+/**
+ * A single optional row. Absent is a legitimate answer (`maybeSingle` reports it
+ * as `data: null, error: null`); a failed query is not.
+ *
+ * Inferred from the whole result rather than from `data` alone: `maybeSingle()`
+ * returns a discriminated union, and matching `{ data: T | null }` against it
+ * makes TypeScript infer `T` as `never` from the error branch. Indexing the
+ * result type sidesteps that and keeps the real row type.
+ */
+function maybeRow<R extends { data: unknown; error: Failure }>(
+  result: R,
+  what: string,
+): R["data"] {
+  if (result.error) throw new ReadError(what, result.error.message);
+  return result.data;
+}
 
 export type Member = {
   userId: string;
@@ -57,12 +102,15 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
 /** The caller's boat. MVP assumes one boat per user; the newest wins. */
 export const getBoat = cache(async (): Promise<Boat | null> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("boats")
-    .select("id, name, tagline, model, home_port, photo_path, status_text, latitude, longitude")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const data = maybeRow(
+    await supabase
+      .from("boats")
+      .select("id, name, tagline, model, home_port, photo_path, status_text, latitude, longitude")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    "את פרטי הסירה",
+  );
 
   if (!data) return null;
 
@@ -81,12 +129,15 @@ export const getBoat = cache(async (): Promise<Boat | null> => {
 
 export const getMembers = cache(async (boatId: string): Promise<Member[]> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("boat_members")
-    .select("user_id, display_name, color, is_remote, profiles(full_name)")
-    .eq("boat_id", boatId);
+  const data = rows(
+    await supabase
+      .from("boat_members")
+      .select("user_id, display_name, color, is_remote, profiles(full_name)")
+      .eq("boat_id", boatId),
+    "את רשימת השותפים",
+  );
 
-  return (data ?? []).map((row) => {
+  return data.map((row) => {
     const profile = row.profiles as { full_name: string | null } | null;
     return {
       userId: row.user_id,
@@ -121,15 +172,18 @@ export type ExpenseRow = {
 
 export const getExpenses = cache(async (boatId: string): Promise<ExpenseRow[]> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("expenses")
-    .select(
-      "id, paid_by, amount_agorot, category, description, spent_on, receipt_path, source, expense_shares(user_id, share_agorot)",
-    )
-    .eq("boat_id", boatId)
-    .order("spent_on", { ascending: false });
+  const data = rows(
+    await supabase
+      .from("expenses")
+      .select(
+        "id, paid_by, amount_agorot, category, description, spent_on, receipt_path, source, expense_shares(user_id, share_agorot)",
+      )
+      .eq("boat_id", boatId)
+      .order("spent_on", { ascending: false }),
+    "את ההוצאות",
+  );
 
-  return (data ?? []).map((row) => ({
+  return data.map((row) => ({
     id: row.id,
     paidBy: row.paid_by,
     amountAgorot: row.amount_agorot,
@@ -156,13 +210,16 @@ export type TransferRow = {
 
 export const getTransfers = cache(async (boatId: string): Promise<TransferRow[]> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("transfers")
-    .select("id, from_user, to_user, amount_agorot, transferred_on, note")
-    .eq("boat_id", boatId)
-    .order("transferred_on", { ascending: false });
+  const data = rows(
+    await supabase
+      .from("transfers")
+      .select("id, from_user, to_user, amount_agorot, transferred_on, note")
+      .eq("boat_id", boatId)
+      .order("transferred_on", { ascending: false }),
+    "את ההעברות",
+  );
 
-  return (data ?? []).map((row) => ({
+  return data.map((row) => ({
     id: row.id,
     fromUser: row.from_user,
     toUser: row.to_user,
@@ -218,13 +275,16 @@ export type RecurringRow = {
 
 export const getRecurringPayments = cache(async (boatId: string): Promise<RecurringRow[]> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("recurring_payments")
-    .select("id, title, category, amount_agorot, cadence, day_of_month, active, default_paid_by, split_mode")
-    .eq("boat_id", boatId)
-    .order("day_of_month");
+  const data = rows(
+    await supabase
+      .from("recurring_payments")
+      .select("id, title, category, amount_agorot, cadence, day_of_month, active, default_paid_by, split_mode")
+      .eq("boat_id", boatId)
+      .order("day_of_month"),
+    "את ההוראות הקבועות",
+  );
 
-  return (data ?? []).map((row) => ({
+  return data.map((row) => ({
     id: row.id,
     title: row.title,
     category: row.category,
@@ -252,17 +312,20 @@ export type OccurrenceRow = {
 export const getUpcomingPayments = cache(
   async (boatId: string, limit = 20): Promise<OccurrenceRow[]> => {
     const supabase = await createClient();
-    const { data } = await supabase
-      .from("recurring_occurrences")
-      .select(
-        "id, recurring_payment_id, amount_agorot, due_on, status, recurring_payments(title, category, default_paid_by)",
-      )
-      .eq("boat_id", boatId)
-      .eq("status", "pending")
-      .order("due_on")
-      .limit(limit);
+    const data = rows(
+      await supabase
+        .from("recurring_occurrences")
+        .select(
+          "id, recurring_payment_id, amount_agorot, due_on, status, recurring_payments(title, category, default_paid_by)",
+        )
+        .eq("boat_id", boatId)
+        .eq("status", "pending")
+        .order("due_on")
+        .limit(limit),
+      "את התשלומים הקרובים",
+    );
 
-    return (data ?? []).map((row) => {
+    return data.map((row) => {
       const parent = row.recurring_payments as {
         title: string;
         category: string;
@@ -303,15 +366,18 @@ export type DocumentRow = {
 
 export const getDocuments = cache(async (boatId: string): Promise<DocumentRow[]> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("documents")
-    .select(
-      "id, title, category, file_path, original_name, mime_type, size_bytes, issued_on, expires_on, reminder_days, notes, created_at",
-    )
-    .eq("boat_id", boatId)
-    .order("created_at", { ascending: false });
+  const data = rows(
+    await supabase
+      .from("documents")
+      .select(
+        "id, title, category, file_path, original_name, mime_type, size_bytes, issued_on, expires_on, reminder_days, notes, created_at",
+      )
+      .eq("boat_id", boatId)
+      .order("created_at", { ascending: false }),
+    "את המסמכים",
+  );
 
-  return (data ?? []).map((row) => ({
+  return data.map((row) => ({
     id: row.id,
     title: row.title,
     category: row.category,
@@ -353,9 +419,9 @@ export const getCalendarItems = cache(
     if (fromISO) query = query.gte("starts_at", fromISO);
     if (toISO) query = query.lte("starts_at", toISO);
 
-    const { data } = await query.order("starts_at");
+    const data = rows(await query.order("starts_at"), "את לוח הזמנים");
 
-    return (data ?? []).map((row) => ({
+    return data.map((row) => ({
       id: row.id as string,
       kind: row.kind as string,
       title: row.title as string,
@@ -376,17 +442,18 @@ export const getNextEvent = cache(async (boatId: string): Promise<CalendarItem |
 /** Arrival events for partners who fly in — shown on the home screen. */
 export const getNextArrival = cache(async (boatId: string) => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("events")
-    .select("id, title, starts_at, ends_at, user_id")
-    .eq("boat_id", boatId)
-    .eq("kind", "arrival")
-    .gte("starts_at", new Date().toISOString())
-    .order("starts_at")
-    .limit(1)
-    .maybeSingle();
-
-  return data ?? null;
+  return maybeRow(
+    await supabase
+      .from("events")
+      .select("id, title, starts_at, ends_at, user_id")
+      .eq("boat_id", boatId)
+      .eq("kind", "arrival")
+      .gte("starts_at", new Date().toISOString())
+      .order("starts_at")
+      .limit(1)
+      .maybeSingle(),
+    "את הגעת השותף",
+  );
 });
 
 export type TaskRow = {
@@ -399,14 +466,17 @@ export type TaskRow = {
 
 export const getOpenTasks = cache(async (boatId: string): Promise<TaskRow[]> => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("tasks")
-    .select("id, title, done, due_on, assigned_to")
-    .eq("boat_id", boatId)
-    .eq("done", false)
-    .order("due_on", { nullsFirst: false });
+  const data = rows(
+    await supabase
+      .from("tasks")
+      .select("id, title, done, due_on, assigned_to")
+      .eq("boat_id", boatId)
+      .eq("done", false)
+      .order("due_on", { nullsFirst: false }),
+    "את המשימות",
+  );
 
-  return (data ?? []).map((row) => ({
+  return data.map((row) => ({
     id: row.id,
     title: row.title,
     done: row.done,
@@ -418,14 +488,15 @@ export const getOpenTasks = cache(async (boatId: string): Promise<TaskRow[]> => 
 /** Newest first. The cap is a sanity bound, not a page — the gallery shows all. */
 export const getMedia = cache(async (boatId: string, limit = 60) => {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("media")
-    .select("id, path, caption")
-    .eq("boat_id", boatId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  return data ?? [];
+  return rows(
+    await supabase
+      .from("media")
+      .select("id, path, caption")
+      .eq("boat_id", boatId)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    "את התמונות",
+  );
 });
 
 /**
@@ -483,6 +554,13 @@ export const getGalleryPhotos = cache(
 /* -------------------------------------------------------------------------- */
 /* Storage                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/*
+ * Signing deliberately does NOT throw the way the reads above do. A path that
+ * fails to sign costs a thumbnail, not the truth about money — a missing photo
+ * is self-evidently missing, whereas an empty expense list is a lie. Degrading
+ * here and throwing there is the intended asymmetry, not an oversight.
+ */
 
 /** Buckets are private, so files are always served via short-lived signed URLs. */
 export async function getSignedUrl(

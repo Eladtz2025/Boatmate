@@ -1,3 +1,4 @@
+import { safeNext } from "@/lib/safe-next";
 import { CallbackHandler } from "./callback-handler";
 
 /**
@@ -30,9 +31,12 @@ export default async function AuthCallbackPage({
   const params = await searchParams;
 
   // Only ever continue to a path inside this app, never an arbitrary origin.
-  const next = params.next?.startsWith("/") ? params.next : "/";
-
+  // This used to be a bare `startsWith("/")` test, which lets `//evil.com`
+  // through — and CallbackHandler hands the value to window.location.replace.
   return (
-    <CallbackHandler next={next} serverError={params.error_description ?? null} />
+    <CallbackHandler
+      next={safeNext(params.next)}
+      serverError={params.error_description ?? null}
+    />
   );
 }

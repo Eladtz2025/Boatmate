@@ -81,9 +81,34 @@ spawns `recurring_occurrences`; only confirming an occurrence creates a real
 affects balances. A DB check constraint enforces that a `paid` occurrence has an
 expense and a pending one does not.
 
+**The occurrence horizon must be topped up on read.**
+`generate_recurring_occurrences` only materialises to `current_date + 120 days`.
+It was once called only when a standing order was *created*, which froze the
+horizon at that moment: four months on, the marina order stopped producing
+occurrences while the recurring tab still showed it active, and the pending list
+went quiet. Quiet reads as "nothing is due" — the one failure here that silently
+produces wrong money over time. `topUpOccurrences()` (`src/lib/recurring.ts`) is
+therefore called by the finances page *and* the calendar page before they read,
+as well as on create. It is `ON CONFLICT DO NOTHING`, so calling it often is
+free; it swallows its own errors, because failing to extend the horizon shows
+fewer future rows but misreports nothing, and must not take a screen down. The
+calendar matters most: its window reaches twelve months forward.
+
 **Expense shares must sum to the expense amount.** Enforced by a deferrable
 constraint trigger, which is why expenses are always created through the
 `create_expense` RPC — a single transaction — never two REST inserts.
+
+**Reads throw; presentation degrades.** Every query in `src/lib/data.ts` goes
+through `rows()` or `maybeRow()`, which raise a `ReadError` naming what failed in
+Hebrew. They used to destructure `{ data }` alone and end in `data ?? []`, which
+mapped *failure* onto *empty* — the app had no way to say "I don't know". A
+dropped connection during `getExpenses` rendered the home tile as
+"כולם מאוזנים": an outage telling three partners they were square. `src/app/(app)/error.tsx`
+catches it, `src/app/global-error.tsx` covers a root-layout failure. The
+asymmetry is deliberate and documented in both files: signing a storage URL still
+degrades silently, because a missing thumbnail is self-evidently missing whereas
+an empty expense list is a lie. Mutations in `actions.ts` have always checked
+`error` — this was only ever a read-path blind spot.
 
 **Sign-in is email-only, by choice.** The login screen takes an address and
 nothing else — no password, no emailed code. `requestEntry` (`src/app/login/actions.ts`)
@@ -193,6 +218,29 @@ are always `{boat_id}/...` — the first path segment is what the storage polici
 authorise against. Files are served through short-lived signed URLs
 (`getSignedUrl()`), never public URLs. Uploads go straight from the browser to
 Supabase; server actions only receive the resulting path.
+
+**Deleting a row deletes its object.** `deleteDocument`, `deleteMedia` and
+`deleteExpense` all read the path before the row goes and then remove it from the
+bucket. `deleteExpense` was the one that did not, which mattered more than it
+sounds: deleting is currently the only way to correct a wrong amount, so it is a
+routine act and every correction stranded a receipt in the bucket forever.
+
+**The service worker never caches a navigation.** `public/sw.js` is network-first
+with `/offline` as the only fallback, and it precaches `/offline` alone — not
+`/`. Navigation responses are authenticated server-rendered HTML carrying this
+boat's balances, a partner's name and every expense; caching them left a snapshot
+of the crew's finances on disk that survived sign-out and served last week's
+numbers as this week's. Bumping `VERSION` is what evicts older caches, since
+`activate` deletes every key that does not match it — so a change of caching
+policy needs a version bump to reach installs that already exist.
+
+**One `safeNext()`, for every entrance.** `src/lib/safe-next.ts`. A bare
+`startsWith("/")` test is not enough: browsers read `//evil.com` and
+`/\evil.com` as protocol-relative URLs, so it has to reject those too or the
+sign-in flow becomes an open redirect. It lived inline in `login/page.tsx`,
+correct and commented, while `auth/callback/page.tsx` did its own weaker check
+and carried the bug the comment next door described. Covered by
+`safe-next.test.ts`.
 
 ## RTL and Hebrew
 

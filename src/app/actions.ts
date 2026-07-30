@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { splitEqual, splitByPercent } from "@/lib/balance";
+import { topUpOccurrences } from "@/lib/recurring";
 import { BUCKETS } from "@/lib/constants";
 
 /**
@@ -150,8 +151,24 @@ export async function createExpense(input: {
 
 export async function deleteExpense(id: string): Promise<ActionResult> {
   const supabase = await createClient();
+
+  // Read the receipt path before the row goes, the way deleteDocument and
+  // deleteMedia already do. Without this the object stayed in the bucket
+  // forever with nothing left pointing at it — and deleting an expense is the
+  // only way to correct a wrong amount, so it is a routine act, not a rare one.
+  const { data: expense } = await supabase
+    .from("expenses")
+    .select("receipt_path")
+    .eq("id", id)
+    .maybeSingle();
+
   const { error } = await supabase.from("expenses").delete().eq("id", id);
   if (error) return fail(error.message);
+
+  if (expense?.receipt_path) {
+    await supabase.storage.from(BUCKETS.receipts).remove([expense.receipt_path]);
+  }
+
   refresh("/", "/finances");
   return ok();
 }
@@ -237,7 +254,9 @@ export async function createRecurringPayment(input: {
   if (error) return fail(error.message);
 
   // Materialise the upcoming due dates so they show on the calendar at once.
-  await supabase.rpc("generate_recurring_occurrences", { p_boat_id: input.boatId });
+  // The finances and calendar pages call this too, on every read — see
+  // lib/recurring.ts for why one call at creation time was not enough.
+  await topUpOccurrences(input.boatId);
 
   refresh("/", "/finances", "/calendar");
   return ok();

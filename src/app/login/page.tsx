@@ -1,19 +1,8 @@
 import Image from "next/image";
+import { safeNext } from "@/lib/safe-next";
 import { LoginForm } from "./login-form";
 
 export const metadata = { title: "כניסה — Boatmate" };
-
-/**
- * `proxy.ts` appends `?next=` when it bounces a signed-out request, and that
- * value arrives straight from the URL. Anything that is not a plain in-app path
- * is dropped: `//evil.com` and `/\evil.com` are both read as protocol-relative
- * URLs by browsers, which would turn the login screen into an open redirect.
- */
-function safeNext(value: string | undefined): string {
-  if (!value?.startsWith("/")) return "/";
-  if (value.startsWith("//") || value.startsWith("/\\")) return "/";
-  return value;
-}
 
 export default async function LoginPage({
   searchParams,

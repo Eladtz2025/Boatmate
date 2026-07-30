@@ -14,6 +14,7 @@ import {
   getTransfers,
   getUpcomingPayments,
 } from "@/lib/data";
+import { topUpOccurrences } from "@/lib/recurring";
 
 export const metadata: Metadata = {
   title: "כספים — Boatmate",
@@ -46,6 +47,11 @@ export default async function FinancesPage({
       </div>
     );
   }
+
+  // Before reading the pending list, not after: the horizon only reaches 120
+  // days past whenever a standing order was last created, so without this the
+  // upcoming payments quietly run out and the screen shows nothing due.
+  await topUpOccurrences(boat.id);
 
   const [members, balances, expenses, transfers, recurring, upcoming] = await Promise.all([
     getMembers(boat.id),
