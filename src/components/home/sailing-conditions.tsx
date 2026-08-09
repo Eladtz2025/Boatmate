@@ -22,6 +22,7 @@ import {
   CALM_GUST_KN,
   TEL_AVIV,
   calmWindow,
+  conditionSpell,
   dailyVerdict,
   dayDate,
   dayLabel,
@@ -373,8 +374,27 @@ function TodayPanel({
  * number — and the profile underneath shows where in the day each end of that
  * range falls, which is the part a single figure can never carry.
  */
+/**
+ * Weather the headline deliberately does not carry, and when it falls —
+ * "מינימום 23° · ערפל 07:00–09:00" beneath a day billed as clear.
+ *
+ * Softening the headline must not lose the fog, only stop it renaming a day it
+ * held for one hour. Nothing milder than fog earns a line: the difference
+ * between a clear hour and a partly cloudy one is not news to anyone.
+ */
+function daySpell(day: DailyForecast) {
+  if (day.severeCode < 45) return null;
+
+  const label = describeWeather(day.severeCode).label;
+  if (label === describeWeather(day.weatherCode).label) return null;
+
+  const window = conditionSpell(day.hours, day.severeCode);
+  return window ? { label, window } : null;
+}
+
 function DayPanel({ day }: { day: DailyForecast }) {
   const sunsetTime = formatClock(day.sunset);
+  const spell = daySpell(day);
 
   return (
     <div className="flex flex-col gap-3">
@@ -384,6 +404,13 @@ function DayPanel({ day }: { day: DailyForecast }) {
         secondary={
           <>
             מינימום <span className="numeric">{day.tempMin}°</span>
+            {spell && (
+              <>
+                {" · "}
+                {spell.label}{" "}
+                <span className="numeric">{formatWindow(spell.window)}</span>
+              </>
+            )}
           </>
         }
       />

@@ -41,6 +41,7 @@ export type HourReading = {
   hour: number;
   windSpeedKn: number;
   windGustKn: number;
+  weatherCode: number;
 };
 
 /**
@@ -59,7 +60,19 @@ export type HourReading = {
 export type DailyForecast = {
   /** Local calendar date in Tel Aviv, "2026-07-29". */
   date: string;
+  /**
+   * The condition to *print* — what this day is actually like, from
+   * `dayCondition()`. Deliberately not Open-Meteo's daily `weather_code`,
+   * which is the day's most severe hour and so labelled a 32° day that was
+   * clear for ten hours "ערפל" on the strength of one foggy hour before dawn.
+   */
   weatherCode: number;
+  /**
+   * The worst daylight hour, kept separately so softening the headline cannot
+   * soften a warning: `dailyVerdict` still reads this for the storm override.
+   * Also what lets a panel name a real spell the headline does not cover.
+   */
+  severeCode: number;
   tempMax: number;
   tempMin: number;
   windMinKn: number;
@@ -183,6 +196,92 @@ export function describeWeather(code: number): { label: string; icon: string } {
   if (code <= 82) return { label: "ממטרים", icon: "cloud-rain" };
   if (code <= 86) return { label: "ממטרי שלג", icon: "snowflake" };
   return { label: "סופת רעמים", icon: "cloud-lightning" };
+}
+
+/**
+ * How much of the daylight day a condition has to hold before it gets to be
+ * the day's headline. A quarter is roughly three hours of a summer day here —
+ * long enough to be what the day *was*, short enough that an afternoon of rain
+ * still gets named.
+ */
+export const CONDITION_SHARE = 0.25;
+
+/**
+ * Group hours by the phrase the card would print for them, not by raw WMO
+ * code. 1 and 2 both read "מעונן חלקית", and three hours of each is a
+ * half-cloudy day even though neither code alone clears the bar.
+ */
+function byCondition(hours: HourReading[]): number[][] {
+  const buckets = new Map<string, number[]>();
+  for (const { weatherCode } of hours) {
+    const key = describeWeather(weatherCode).label;
+    const codes = buckets.get(key);
+    if (codes) codes.push(weatherCode);
+    else buckets.set(key, [weatherCode]);
+  }
+  return [...buckets.values()];
+}
+
+/**
+ * The condition to put at the top of a day panel.
+ *
+ * The severest condition that holds for a real part of the daylight day —
+ * falling back to the most common one if the day is too mixed for anything to
+ * qualify. This is the same rule the wind already follows: **never summarise a
+ * sailing day by its single most extreme hour.** Open-Meteo's daily
+ * `weather_code` is exactly that maximum, which is how a clear 32° August day
+ * came to be labelled "ערפל" off one hour of coastal fog at dawn — and why the
+ * hours are restricted to daylight here, since that fog had usually burned off
+ * before anyone was awake to see it.
+ *
+ * Severity is taken as raw code order, which WMO gives us for free and which
+ * holds everywhere it matters on this coast.
+ */
+export function dayCondition(hours: HourReading[]): number {
+  if (hours.length === 0) return 0;
+
+  const buckets = byCondition(hours);
+  const holds = buckets.filter(
+    (codes) => codes.length / hours.length >= CONDITION_SHARE,
+  );
+  if (holds.length) return Math.max(...holds.flat());
+
+  const commonest = buckets.reduce((a, b) => (b.length > a.length ? b : a));
+  return Math.max(...commonest);
+}
+
+/** The worst hour of the day — what a warning is allowed to be drawn from. */
+export function severeCondition(hours: HourReading[]): number {
+  return hours.length ? Math.max(...hours.map((hour) => hour.weatherCode)) : 0;
+}
+
+/**
+ * When the headline does not cover something, say when that something is:
+ * "בהיר · ערפל 07:00–09:00" beats either dropping the fog or letting it
+ * rename the day.
+ *
+ * First matching hour to last — an outer bound, not an unbroken run like
+ * `calmWindow`. Fog that lifts and returns reads as one long spell, which
+ * errs toward warning and is the right way round for weather you are being
+ * told about rather than invited into.
+ *
+ * Null when the code never appears, or when it holds the whole day and the
+ * headline has therefore already said so.
+ */
+export function conditionSpell(
+  hours: HourReading[],
+  code: number,
+): CalmWindow | null {
+  const label = describeWeather(code).label;
+  const matching = hours.filter(
+    (hour) => describeWeather(hour.weatherCode).label === label,
+  );
+  if (matching.length === 0 || matching.length === hours.length) return null;
+
+  return {
+    fromHour: matching[0].hour,
+    toHour: matching[matching.length - 1].hour + 1,
+  };
 }
 
 const COMPASS = [
@@ -325,7 +424,10 @@ export function sailingVerdict(weather: VerdictInput): Verdict {
  * override the window.
  */
 export function dailyVerdict(day: DailyForecast): Verdict {
-  if (day.weatherCode >= 95)
+  // `severeCode`, not the headline: the headline is deliberately the condition
+  // that held for most of the day, and an afternoon thunderstorm has to stop
+  // you going out even when the morning was the day's real character.
+  if (day.severeCode >= 95)
     return { label: "סופת רעמים — לא יוצאים", tone: "poor" };
   if (day.gustMaxKn >= 30 || (day.waveHeight !== null && day.waveHeight >= 2))
     return { label: "ים סוער — לא מומלץ", tone: "poor" };

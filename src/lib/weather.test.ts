@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   CALM_GUST_KN,
   calmWindow,
+  conditionSpell,
   dailyVerdict,
+  dayCondition,
   formatWindow,
+  severeCondition,
   type DailyForecast,
   type HourReading,
 } from "./weather";
@@ -11,7 +14,7 @@ import {
 /**
  * Hours from a compact "hour: gust" map. Wind is not what any of this reads,
  * so it is left at a nominal third of the gust — roughly the ratio this coast
- * actually runs at.
+ * actually runs at. Weather is clear unless a test says otherwise.
  */
 function hours(gusts: Record<number, number>): HourReading[] {
   return Object.entries(gusts)
@@ -19,9 +22,32 @@ function hours(gusts: Record<number, number>): HourReading[] {
       hour: Number(hour),
       windGustKn: gust,
       windSpeedKn: Math.round(gust / 3),
+      weatherCode: 0,
     }))
     .sort((a, b) => a.hour - b.hour);
 }
+
+/** Hours from a compact "hour: WMO code" map. Wind is flat and calm. */
+function sky(codes: Record<number, number>): HourReading[] {
+  return Object.entries(codes)
+    .map(([hour, weatherCode]) => ({
+      hour: Number(hour),
+      windGustKn: 5,
+      windSpeedKn: 2,
+      weatherCode,
+    }))
+    .sort((a, b) => a.hour - b.hour);
+}
+
+/** Thirteen daylight hours, 07:00–19:00, all carrying the same code. */
+const allDay = (code: number): HourReading[] =>
+  sky(Object.fromEntries(Array.from({ length: 13 }, (_, i) => [i + 7, code])));
+
+/** The shape that started this: dawn fog under an otherwise clear day. */
+const FOGGY_DAWN = sky({
+  7: 45, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 1,
+  14: 1, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0,
+});
 
 /** A real Tel Aviv summer day: glass until noon, sea breeze until sunset. */
 const SEA_BREEZE = hours({
@@ -46,6 +72,7 @@ function day(overrides: Partial<DailyForecast> = {}): DailyForecast {
   return {
     date: "2026-07-29",
     weatherCode: 2,
+    severeCode: 2,
     tempMax: 31,
     tempMin: 24,
     windMinKn: 1,
@@ -107,6 +134,87 @@ describe("calmWindow", () => {
   });
 });
 
+describe("dayCondition", () => {
+  it("does not let one foggy hour name a clear day", () => {
+    // The bug this exists for: Open-Meteo's daily code is the day's most severe
+    // hour, so 30.7 — ten daylight hours of clear sky — came back as 45 and the
+    // card headlined a 32° August day "ערפל", in amber, with a fog icon.
+    expect(dayCondition(FOGGY_DAWN)).toBe(0);
+  });
+
+  it("still names weather that holds for a real part of the day", () => {
+    // Six hours of rain out of thirteen is what the day was, not a footnote.
+    const wet = sky({
+      7: 0, 8: 0, 9: 0, 10: 61, 11: 61, 12: 61,
+      13: 61, 14: 61, 15: 61, 16: 3, 17: 3, 18: 0, 19: 0,
+    });
+    expect(dayCondition(wet)).toBe(61);
+  });
+
+  it("counts hours by what the card would print, not by raw code", () => {
+    // 1 and 2 are both "מעונן חלקית". Neither clears a quarter of the day
+    // alone; together they are over half of it, and calling this day clear
+    // would be the same mistake in the other direction.
+    const hazy = sky({
+      7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 1,
+      13: 1, 14: 1, 15: 1, 16: 2, 17: 2, 18: 2, 19: 2,
+    });
+    expect(dayCondition(hazy)).toBe(2);
+  });
+
+  it("takes the severest of the conditions that do hold", () => {
+    const mixed = sky({
+      7: 0, 8: 0, 9: 0, 10: 0, 11: 3, 12: 3,
+      13: 3, 14: 3, 15: 61, 16: 61, 17: 61, 18: 61, 19: 0,
+    });
+    expect(dayCondition(mixed)).toBe(61);
+  });
+
+  it("falls back to the commonest when the day is too mixed for anything to hold", () => {
+    const jumble = sky({ 7: 0, 8: 0, 9: 0, 10: 3, 11: 3, 12: 45, 13: 51, 14: 61, 15: 71, 16: 80, 17: 95, 18: 1, 19: 2 });
+    // Nothing reaches a quarter; "בהיר" is three of thirteen and the largest.
+    expect(dayCondition(jumble)).toBe(0);
+  });
+
+  it("is clear-by-default with no hours at all", () => {
+    expect(dayCondition([])).toBe(0);
+  });
+
+  it("leaves an unbroken day alone", () => {
+    expect(dayCondition(allDay(3))).toBe(3);
+  });
+});
+
+describe("severeCondition", () => {
+  it("finds the worst hour", () => {
+    expect(severeCondition(FOGGY_DAWN)).toBe(45);
+  });
+
+  it("is clear-by-default with no hours at all", () => {
+    expect(severeCondition([])).toBe(0);
+  });
+});
+
+describe("conditionSpell", () => {
+  it("says when the weather the headline dropped actually fell", () => {
+    expect(conditionSpell(FOGGY_DAWN, 45)).toEqual({ fromHour: 7, toHour: 8 });
+  });
+
+  it("spans from the first matching hour to the last", () => {
+    const wet = sky({ 7: 0, 8: 61, 9: 0, 10: 63, 11: 0, 12: 0, 13: 0 });
+    // 61 and 63 are both "גשם", so the spell covers the whole wet stretch.
+    expect(conditionSpell(wet, 61)).toEqual({ fromHour: 8, toHour: 11 });
+  });
+
+  it("is null when the condition never appears", () => {
+    expect(conditionSpell(FOGGY_DAWN, 95)).toBeNull();
+  });
+
+  it("is null when it is the whole day — the headline already said so", () => {
+    expect(conditionSpell(allDay(45), 45)).toBeNull();
+  });
+});
+
 describe("formatWindow", () => {
   it("reads as a pair of clock times", () => {
     expect(formatWindow({ fromHour: 6, toHour: 12 })).toBe("06:00–12:00");
@@ -141,7 +249,16 @@ describe("dailyVerdict", () => {
   });
 
   it("lets a storm override an otherwise calm day", () => {
-    expect(dailyVerdict(day({ weatherCode: 95 })).tone).toBe("poor");
+    expect(dailyVerdict(day({ severeCode: 95 })).tone).toBe("poor");
+  });
+
+  it("reads the storm off the worst hour, not off the headline", () => {
+    // The whole point of splitting the two. Three hours of thunderstorm in a
+    // fourteen-hour day do not get to be the day's *label* — but they very much
+    // get to stop you going out, so softening one must not soften the other.
+    expect(
+      dailyVerdict(day({ weatherCode: 0, severeCode: 95 })).tone,
+    ).toBe("poor");
   });
 
   it("lets a heavy sea override a calm window", () => {

@@ -1,6 +1,8 @@
 import "server-only";
 import {
   TEL_AVIV,
+  dayCondition,
+  severeCondition,
   type DailyForecast,
   type HourReading,
   type Weather,
@@ -64,11 +66,18 @@ function firstDaylightHour(sunriseLocal: string): number {
   return minutes > 0 ? localHour(sunriseLocal) + 1 : localHour(sunriseLocal);
 }
 
-/** Everything between sunrise and sunset — nobody is planning a 03:00 sail. */
+/**
+ * Everything between sunrise and sunset — nobody is planning a 03:00 sail.
+ *
+ * This window is also what keeps the day's headline honest. Tel Aviv's summer
+ * fog forms before dawn and is gone by the time anyone looks at the app; kept
+ * in, it counts toward the day's condition and can end up naming it.
+ */
 function daylightHours(
   times: string[],
   wind: number[],
   gusts: number[],
+  codes: number[],
   date: string,
   sunriseLocal: string | undefined,
   sunsetLocal: string | undefined,
@@ -87,6 +96,7 @@ function daylightHours(
       hour,
       windSpeedKn: round(wind[index]),
       windGustKn: round(gusts[index]),
+      weatherCode: round(codes[index]),
     });
   }
   return hours;
@@ -99,7 +109,7 @@ export async function getConditions(): Promise<Weather | null> {
     `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
     `&current=temperature_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,visibility` +
     `&daily=sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_direction_10m_dominant` +
-    `&hourly=wind_speed_10m,wind_gusts_10m` +
+    `&hourly=wind_speed_10m,wind_gusts_10m,weather_code` +
     `&wind_speed_unit=kn&timezone=auto&forecast_days=${FORECAST_DAYS}`;
 
   const marineUrl =
@@ -147,6 +157,7 @@ export async function getConditions(): Promise<Weather | null> {
     );
 
     const hourly = forecast.hourly ?? {};
+    const hourlyCodes = (hourly.weather_code ?? []) as number[];
 
     const days: DailyForecast[] = ((daily.time ?? []) as string[]).map(
       (date, index) => {
@@ -155,6 +166,7 @@ export async function getConditions(): Promise<Weather | null> {
           hourly.time ?? [],
           hourly.wind_speed_10m ?? [],
           hourly.wind_gusts_10m ?? [],
+          hourlyCodes,
           date,
           daily.sunrise?.[index],
           daily.sunset?.[index],
@@ -165,9 +177,16 @@ export async function getConditions(): Promise<Weather | null> {
         const winds = hours.map((hour) => hour.windSpeedKn);
         const gusts = hours.map((hour) => hour.windGustKn);
 
+        // With no hourly codes there is nothing to read the day's character
+        // from, and `round()` would turn the gap into a confident "בהיר" for
+        // every day. Fall back to the daily code — worse, but not invented.
+        const dailyCode: number = daily.weather_code?.[index] ?? 0;
+        const readable = hours.length > 0 && hourlyCodes.length > 0;
+
         return {
           date,
-          weatherCode: daily.weather_code?.[index] ?? 0,
+          weatherCode: readable ? dayCondition(hours) : dailyCode,
+          severeCode: readable ? severeCondition(hours) : dailyCode,
           tempMax: round(daily.temperature_2m_max?.[index]),
           tempMin: round(daily.temperature_2m_min?.[index]),
           windMinKn: winds.length ? Math.min(...winds) : 0,

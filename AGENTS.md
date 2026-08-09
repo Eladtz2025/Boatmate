@@ -191,6 +191,25 @@ daylight only, and names the calm window (`calmWindow()`). `dailyVerdict()`
 therefore asks "is there a stretch of this day I could go out in", not "how bad
 does this day get" — only a storm or a heavy sea overrides a window.
 
+**The same rule governs the day's *condition*, and this one shipped broken.**
+Open-Meteo's daily `weather_code` is the day's most severe hour, so one hour of
+coastal fog before dawn labelled a clear 32° August day "ערפל" — amber, fog
+icon, the headline of the panel. It hit six of twenty-six days sampled, and the
+fog had almost always burned off before sunrise, so nobody reading the app could
+even see what it was describing. `DailyForecast` therefore carries two codes:
+`weatherCode` is what to *print* — `dayCondition()`, the severest condition
+holding for at least `CONDITION_SHARE` of the daylight hours, falling back to
+the commonest — and `severeCode` is the worst daylight hour, which is what
+`dailyVerdict()` reads for the storm override. **Keep them apart.** Softening a
+headline must never soften a warning: an afternoon thunderstorm does not get to
+name a day that was clear until three, and it absolutely still has to stop you
+going out. `dayCondition()` counts hours by the phrase `describeWeather()` would
+print rather than by raw code, because 1 and 2 both read "מעונן חלקית" and three
+hours of each is a half-cloudy day that neither code alone would claim.
+`conditionSpell()` is what keeps the softening honest — it puts "ערפל
+07:00–09:00" under a day billed clear, so the fog is dropped as a *headline*
+without being dropped as a *fact*.
+
 Related: **gust *ratio* tests are useless on this coast.** Gusts run a steady
 2.8–3× the mean wind at every hour, including 02:00 in a dead calm, so
 `gustFactor >= 1.6` is true around the clock and separates nothing. Absolute
