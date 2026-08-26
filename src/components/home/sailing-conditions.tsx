@@ -76,46 +76,36 @@ function telAvivHour(): number {
 }
 
 /**
- * Gusts hour by hour, which is the whole reason this card grew a forecast:
- * a summer day here is glass until noon and 22 knots by two, and one number
- * for the day describes neither half of it.
+ * Wind hour by hour, which is the whole reason this card grew a forecast:
+ * a summer day here is glass until noon and a full breeze by two, and one
+ * number for the day describes neither half of it.
  *
- * Bars past the calm limit go amber, so the shape of the sea breeze is legible
- * without reading a single figure. Laid out right-to-left like everything else
- * in the app — the hour labels underneath keep it unambiguous.
+ * The steady wind, not the gusts. The gust reading runs ~3× the wind here at
+ * every hour, so a gust profile painted a normal sea-breeze afternoon amber
+ * while the sailor it was written for was looking at six knots of lovely
+ * wind — the bars have to answer the question they are asked, "מה הרוח
+ * עכשיו". The calm window underneath still reads gusts, where squalls belong.
+ * The scale is floored at 10 so a glassy morning still shows its shape.
+ * Laid out right-to-left like everything else in the app — the hour labels
+ * underneath keep it unambiguous.
  */
-function GustProfile({ hours }: { hours: HourReading[] }) {
-  const peak = Math.max(CALM_GUST_KN, ...hours.map((hour) => hour.windGustKn));
+function WindProfile({ hours }: { hours: HourReading[] }) {
+  const peak = Math.max(10, ...hours.map((hour) => hour.windSpeedKn));
 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between text-[11px] text-ink-muted">
-        <span>משבים לפי שעה</span>
+        <span>רוח לפי שעה</span>
         <span className="numeric text-ink-subtle">קשר</span>
       </div>
 
       <div className="relative h-12">
-        {/* The calm line, so a bar's height reads as "over" or "under". */}
-        <div
-          className="absolute inset-x-0 border-t border-dashed border-ink-subtle/40"
-          style={{ bottom: `${(CALM_GUST_KN / peak) * 100}%` }}
-        >
-          <span className="numeric absolute -top-3.5 end-0 text-[9px] text-ink-subtle">
-            {CALM_GUST_KN}
-          </span>
-        </div>
-
         <div className="flex h-full items-end gap-px">
           {hours.map((hour) => (
             <div
               key={hour.hour}
-              className={cn(
-                "min-h-px flex-1 rounded-t-sm",
-                hour.windGustKn >= CALM_GUST_KN
-                  ? "bg-warning/80"
-                  : "bg-teal-400/70",
-              )}
-              style={{ height: `${(hour.windGustKn / peak) * 100}%` }}
+              className="min-h-px flex-1 rounded-t-sm bg-teal-400/70"
+              style={{ height: `${(hour.windSpeedKn / peak) * 100}%` }}
             />
           ))}
         </div>
@@ -335,7 +325,7 @@ function TodayPanel({
       </div>
 
       {/* Two bars is not a profile; late in the day there is nothing to plot. */}
-      {remaining.length >= 3 && <GustProfile hours={remaining} />}
+      {remaining.length >= 3 && <WindProfile hours={remaining} />}
 
       <div className="flex flex-col gap-1.5 border-t border-[var(--hairline)] pt-2.5">
         <VerdictLine verdict={sailingVerdict(weather)} />
@@ -448,7 +438,7 @@ function DayPanel({ day }: { day: DailyForecast }) {
         />
       </div>
 
-      {day.hours.length > 0 && <GustProfile hours={day.hours} />}
+      {day.hours.length > 0 && <WindProfile hours={day.hours} />}
 
       <div className="flex flex-col gap-1.5 border-t border-[var(--hairline)] pt-2.5">
         <VerdictLine verdict={dailyVerdict(day)} />
