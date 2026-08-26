@@ -213,9 +213,12 @@ without being dropped as a *fact*.
 Related: **gust *ratio* tests are useless on this coast.** Gusts run a steady
 2.8–3× the mean wind at every hour, including 02:00 in a dead calm, so
 `gustFactor >= 1.6` is true around the clock and separates nothing. Absolute
-gust is the signal; `CALM_GUST_KN` is the one number to move to retune the card.
-`isGusty()` still exists for the live "right now" verdict, where the ratio is at
-least describing a single moment.
+gust is the signal; `CALM_GUST_KN` is the one number to move to retune the day
+profile, `GUSTY_NOW_KN` the live one. The live verdict used to keep the ratio
+on the theory that "right now" is a single moment — it is not: Open-Meteo's
+`current` gust is the *past hour's maximum* against a near-instant mean wind,
+so a 12:15 reading of 5.5 kn under a 15.9 kn gust (a lovely sail) came back
+"משבים חזקים — להיזהר". `isGusty()` is absolute now.
 
 **`next/image` quality is an allowlist now.** Next 16 refuses any `quality` not
 named in `images.qualities`; the default list is `[75]` alone. The photo viewer

@@ -271,7 +271,7 @@ function TodayPanel({
   weather: Weather;
   today: DailyForecast | undefined;
 }) {
-  const gusty = isGusty(weather.windSpeedKn, weather.windGustKn);
+  const gusty = isGusty(weather.windGustKn);
   const daylightLeft = hoursUntilSunset(weather.sunset);
   const sunsetTime = formatClock(weather.sunset);
 

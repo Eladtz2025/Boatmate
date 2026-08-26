@@ -333,17 +333,21 @@ export function isGoodSailing(windSpeedKn: number, waveHeight: number | null) {
 }
 
 /**
- * Gusts matter more than average wind for a day out. A gust half again the
- * steady wind is a squally, shifty day even when the average reads mild — the
- * average is what lulls you into going, the gust is what you actually sail in.
+ * The gust above which the live "right now" reading warns of squalls.
+ *
+ * Absolute, deliberately not a ratio. Two facts about this coast: gusts run a
+ * steady ~2.9× the mean wind at every hour of the day, and Open-Meteo's
+ * `current` gust is the *past hour's maximum* while its wind is a near-instant
+ * mean. A ratio test therefore fired around the clock, and the old 15-knot
+ * floor sat below the ordinary sea-breeze gust band — a 12:15 reading of
+ * 5.5 kn of wind under a 15.9 kn gust, a lovely sail, came back "משבים חזקים —
+ * להיזהר". 20 sits above the normal daily gust peak and well below the 30
+ * that closes the day outright.
  */
-export function gustFactor(windSpeedKn: number, windGustKn: number): number {
-  if (windSpeedKn <= 0) return windGustKn > 0 ? Infinity : 1;
-  return windGustKn / windSpeedKn;
-}
+export const GUSTY_NOW_KN = 20;
 
-export function isGusty(windSpeedKn: number, windGustKn: number): boolean {
-  return windGustKn >= 15 && gustFactor(windSpeedKn, windGustKn) >= 1.6;
+export function isGusty(windGustKn: number): boolean {
+  return windGustKn >= GUSTY_NOW_KN;
 }
 
 /**
@@ -401,7 +405,7 @@ export function sailingVerdict(weather: VerdictInput): Verdict {
   if (windGustKn >= 30 || (waveHeight !== null && waveHeight >= 2))
     return { label: "ים סוער — לא מומלץ", tone: "poor" };
 
-  if (isGusty(windSpeedKn, windGustKn))
+  if (isGusty(windGustKn))
     return { label: "משבים חזקים — להיזהר", tone: "caution" };
   if (isChoppy(waveHeight, wavePeriod))
     return { label: "ים קצוץ — לא נוח", tone: "caution" };

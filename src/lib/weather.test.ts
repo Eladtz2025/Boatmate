@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   CALM_GUST_KN,
+  GUSTY_NOW_KN,
   calmWindow,
   conditionSpell,
   dailyVerdict,
   dayCondition,
   formatWindow,
+  isGusty,
+  sailingVerdict,
   severeCondition,
   type DailyForecast,
   type HourReading,
@@ -222,6 +225,44 @@ describe("formatWindow", () => {
 
   it("does not print a 24th hour", () => {
     expect(formatWindow({ fromHour: 21, toHour: 24 })).toBe("21:00–00:00");
+  });
+});
+
+describe("isGusty", () => {
+  it("does not call an ordinary sea breeze a squall", () => {
+    // The reading that shipped the fix: 12:15 in August, 5.5 kn of wind under
+    // a 15.9 kn gust — a lovely sail that the old ratio test labelled
+    // "משבים חזקים — להיזהר". Gusts run ~2.9× the mean here at every hour, so
+    // the ratio separates nothing, and the `current` gust is a past-hour max
+    // besides. Absolute gust is the signal.
+    expect(isGusty(15.9)).toBe(false);
+  });
+
+  it("takes the threshold from GUSTY_NOW_KN", () => {
+    expect(isGusty(GUSTY_NOW_KN)).toBe(true);
+    expect(isGusty(GUSTY_NOW_KN - 1)).toBe(false);
+  });
+});
+
+describe("sailingVerdict", () => {
+  it("calls the live sea breeze good, not gusty", () => {
+    expect(sailingVerdict({
+      windSpeedKn: 6,
+      windGustKn: 19,
+      waveHeight: 0.4,
+      wavePeriod: 7,
+      weatherCode: 1,
+    })).toEqual({ label: "תנאים טובים להפלגה", tone: "good" });
+  });
+
+  it("still warns when the gusts are genuinely squally", () => {
+    expect(sailingVerdict({
+      windSpeedKn: 8,
+      windGustKn: 22,
+      waveHeight: 0.4,
+      wavePeriod: 7,
+      weatherCode: 1,
+    })).toEqual({ label: "משבים חזקים — להיזהר", tone: "caution" });
   });
 });
 
