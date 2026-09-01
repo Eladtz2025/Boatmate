@@ -4,6 +4,17 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { splitEqual, splitByPercent } from "@/lib/balance";
+import {
+  STAY_LABEL,
+  attendanceWindow,
+  dayRange,
+  type Stay,
+} from "@/lib/attendance";
+import {
+  deleteGoogleEvent,
+  upsertGoogleEvent,
+  type SyncResult,
+} from "@/lib/google-calendar";
 import { topUpOccurrences } from "@/lib/recurring";
 import { BUCKETS } from "@/lib/constants";
 
@@ -470,12 +481,176 @@ export async function deleteEvent(id: string): Promise<ActionResult> {
   return ok();
 }
 
+/* -------------------------------------------------------------------------- */
+/* Attendance                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The result of marking attendance. `ok` says whether the boat's own record
+ * changed — the only thing a partner is really asking about — and `sync`
+ * reports Google separately, so a calendar that is down can be *said* rather
+ * than either hidden or mistaken for a failed save.
+ */
+export type AttendanceResult =
+  | { ok: true; sync: SyncResult; eventId: string }
+  | { ok: false; error: string };
+
+const failAttendance = (error: string): AttendanceResult => ({ ok: false, error });
+
+/**
+ * Set — or change — who is on the boat on a given day.
+ *
+ * Idempotent by construction: it looks for this partner's existing arrival on
+ * that Israel calendar day and updates it, so tapping "מגיע!" twice, or
+ * switching "ליום" to "לינה", can never leave two rows behind. Any extra rows
+ * a past double-tap did leave are cleaned up here rather than being rendered
+ * as two people.
+ *
+ * Google is synced *after* the row is safely written, and its failure is
+ * returned, never thrown — attendance saving is not allowed to depend on a
+ * third party being up.
+ */
+export async function setAttendance(input: {
+  boatId: string;
+  dateKey: string;
+  stay: Stay;
+  /** Whose attendance. Defaults to the caller. */
+  userId?: string;
+  /** Shown as the event title and as the Google event summary. */
+  partnerName: string;
+}): Promise<AttendanceResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const userId = input.userId ?? user?.id;
+  if (!userId) return failAttendance("צריך להתחבר מחדש");
+
+  const { startsAt, endsAt } = attendanceWindow(input.dateKey, input.stay);
+  const { from, to } = dayRange(input.dateKey);
+
+  const { data: existing, error: readError } = await supabase
+    .from("events")
+    .select("id")
+    .eq("boat_id", input.boatId)
+    .eq("kind", "arrival")
+    .eq("user_id", userId)
+    .gte("starts_at", from)
+    .lt("starts_at", to)
+    .order("starts_at");
+
+  if (readError) return failAttendance(readError.message);
+
+  const row = {
+    boat_id: input.boatId,
+    kind: "arrival",
+    title: input.partnerName,
+    starts_at: startsAt,
+    ends_at: endsAt,
+    all_day: false,
+    user_id: userId,
+    created_by: user?.id ?? null,
+  };
+
+  let eventId: string;
+
+  if (existing && existing.length > 0) {
+    eventId = existing[0].id;
+
+    const { error } = await supabase.from("events").update(row).eq("id", eventId);
+    if (error) return failAttendance(error.message);
+
+    // Defensive: an older double-tap could have left a second row for the same
+    // partner on the same day, and two rows read as two people coming.
+    const duplicates = existing.slice(1).map((item) => item.id);
+    if (duplicates.length > 0) {
+      await supabase.from("events").delete().in("id", duplicates);
+      for (const id of duplicates) await deleteGoogleEvent(id);
+    }
+  } else {
+    const { data: created, error } = await supabase
+      .from("events")
+      .insert(row)
+      .select("id")
+      .single();
+
+    if (error) return failAttendance(error.message);
+    eventId = created.id;
+  }
+
+  const sync = await upsertGoogleEvent({
+    eventId,
+    summary: `${input.partnerName} — ${STAY_LABEL[input.stay]}`,
+    description: "נקבע ב-Boatmate",
+    startsAt,
+    endsAt,
+  });
+
+  refresh("/", "/calendar");
+  return { ok: true, sync, eventId };
+}
+
+/** Cancel attendance. Removes the calendar entry too; already gone is fine. */
+export async function clearAttendance(input: {
+  boatId: string;
+  dateKey: string;
+  userId?: string;
+}): Promise<AttendanceResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const userId = input.userId ?? user?.id;
+  if (!userId) return failAttendance("צריך להתחבר מחדש");
+
+  const { from, to } = dayRange(input.dateKey);
+
+  const { data: existing, error: readError } = await supabase
+    .from("events")
+    .select("id")
+    .eq("boat_id", input.boatId)
+    .eq("kind", "arrival")
+    .eq("user_id", userId)
+    .gte("starts_at", from)
+    .lt("starts_at", to);
+
+  if (readError) return failAttendance(readError.message);
+
+  const ids = (existing ?? []).map((item) => item.id);
+  if (ids.length === 0) {
+    refresh("/", "/calendar");
+    return { ok: true, sync: { status: "ok" }, eventId: "" };
+  }
+
+  const { error } = await supabase.from("events").delete().in("id", ids);
+  if (error) return failAttendance(error.message);
+
+  // Every id is removed, but only the first failure is worth reporting.
+  let sync: SyncResult = { status: "ok" };
+  for (const id of ids) {
+    const result = await deleteGoogleEvent(id);
+    if (result.status !== "ok" && sync.status === "ok") sync = result;
+  }
+
+  refresh("/", "/calendar");
+  return { ok: true, sync, eventId: ids[0] };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared checklist                                                           */
+/* -------------------------------------------------------------------------- */
+
 export async function createTask(input: {
   boatId: string;
   title: string;
   dueOn?: string | null;
   assignedTo?: string | null;
 }): Promise<ActionResult> {
+  const title = input.title.trim();
+  if (!title) return fail("צריך טקסט לפריט");
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -483,7 +658,7 @@ export async function createTask(input: {
 
   const { error } = await supabase.from("tasks").insert({
     boat_id: input.boatId,
-    title: input.title,
+    title,
     due_on: input.dueOn || null,
     assigned_to: input.assignedTo ?? null,
     created_by: user?.id ?? null,
@@ -501,6 +676,14 @@ export async function setTaskDone(id: string, done: boolean): Promise<ActionResu
     .update({ done, completed_at: done ? new Date().toISOString() : null })
     .eq("id", id);
 
+  if (error) return fail(error.message);
+  refresh("/");
+  return ok();
+}
+
+export async function deleteTask(id: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const { error } = await supabase.from("tasks").delete().eq("id", id);
   if (error) return fail(error.message);
   refresh("/");
   return ok();

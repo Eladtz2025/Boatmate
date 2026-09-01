@@ -1,10 +1,19 @@
 import type { Metadata } from "next";
 import { CalendarDays } from "lucide-react";
-import { getBoat, getCalendarItems, getMembers } from "@/lib/data";
+import {
+  getAttendance,
+  getBoat,
+  getCalendarItems,
+  getCurrentUser,
+  getMembers,
+} from "@/lib/data";
+import { STRIP_DAYS, stripDates } from "@/lib/attendance";
+import { addDaysToKey, todayKey } from "@/lib/tz";
 import { topUpOccurrences } from "@/lib/recurring";
 import { toDateInput } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
-import { CalendarScreen, type CalendarView } from "@/components/calendar/calendar-screen";
+import { CalendarTabs } from "@/components/calendar/calendar-tabs";
+import type { CalendarView } from "@/components/calendar/calendar-screen";
 
 export const metadata: Metadata = { title: "יומן — Boatmate" };
 
@@ -13,13 +22,18 @@ const VIEWS: readonly string[] = ["month", "week", "day", "timeline"];
 const parseView = (value: string | string[] | undefined): CalendarView =>
   typeof value === "string" && VIEWS.includes(value) ? (value as CalendarView) : "month";
 
-/** `?new=event` — the home quick action and the PWA shortcut both link here. */
+/** `?new=event` — the PWA shortcut and the event form both link here. */
 const wantsNewEvent = (value: string | string[] | undefined): boolean =>
   (Array.isArray(value) ? value[0] : value) === "event";
 
 /**
- * Fetches a wide window — three months back, twelve forward — once, so the
- * client can switch between month, week, day and timeline without a round trip.
+ * The calendar leads with attendance — "who is coming to the boat, and when?" —
+ * and keeps the full month / week / day / timeline calendar behind the second
+ * tab for everything the event system still carries.
+ *
+ * The wide item window (three months back, twelve forward) is fetched once so
+ * the full calendar can switch views without a round trip; attendance is a
+ * separate, much narrower read over the three weeks the strip shows.
  */
 export default async function CalendarPage({
   searchParams,
@@ -50,9 +64,16 @@ export default async function CalendarPage({
   const from = new Date(now.getFullYear(), now.getMonth() - 3, 1);
   const to = new Date(now.getFullYear(), now.getMonth() + 13, 0, 23, 59, 59);
 
-  const [items, members] = await Promise.all([
+  // "Today" for attendance is Israel's today, not the server's — the boat is
+  // in Tel Aviv and one of the partners reads this from another timezone.
+  const today = todayKey(now);
+  const dates = stripDates(today);
+
+  const [items, members, attendance, user] = await Promise.all([
     getCalendarItems(boat.id, from.toISOString(), to.toISOString()),
     getMembers(boat.id),
+    getAttendance(boat.id, today, addDaysToKey(today, STRIP_DAYS - 1)),
+    getCurrentUser(),
   ]);
 
   return (
@@ -63,10 +84,14 @@ export default async function CalendarPage({
         <span className="truncate text-xs text-ink-muted">{boat.name}</span>
       </header>
 
-      <CalendarScreen
+      <CalendarTabs
         boatId={boat.id}
         boatName={boat.name}
         members={members}
+        currentUserId={user?.id ?? ""}
+        attendance={attendance}
+        dates={dates}
+        todayKey={today}
         items={items}
         initialView={parseView(view)}
         serverToday={toDateInput(now)}

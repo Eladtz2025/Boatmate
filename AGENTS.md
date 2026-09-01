@@ -60,6 +60,9 @@ npx supabase gen types typescript --project-id <ref> --schema public
 | `src/lib/gallery.ts` | Photo shape shared by the server reads and the client viewer |
 | `src/lib/constants.ts` | Hebrew labels for every category and enum |
 | `src/lib/weather.ts`, `src/lib/weather-data.ts` | Sailing conditions — pure presentation helpers, and the server-side Open-Meteo fetch |
+| `src/lib/attendance.ts` | "Who is coming to the boat, and when" — pure, unit-tested |
+| `src/lib/tz.ts` | Israel wall-clock ↔ instant. Everything date-keyed goes through it |
+| `src/lib/google-calendar.ts` | Optional attendance sync to one shared Google calendar |
 | `supabase/migrations/` | Schema, RLS policies, storage buckets |
 | `supabase/scripts/` | One-off operational SQL. Run by hand, never by `db push` |
 
@@ -93,6 +96,31 @@ as well as on create. It is `ON CONFLICT DO NOTHING`, so calling it often is
 free; it swallows its own errors, because failing to extend the horizon shows
 fewer future rows but misreports nothing, and must not take a screen down. The
 calendar matters most: its window reaches twelve months forward.
+
+**Attendance is an `events` row, not a table of its own.** `kind = 'arrival'`
+with a `user_id`, and the stay type is **derived from the dates** rather than
+stored in a flag: a day runs 08:00–20:00 Israel time, an overnight 08:00 to
+10:00 the next morning, and anything ending on a later calendar day reads back
+as an overnight. That keeps one answer to "somebody is on the boat that day" —
+the home tile, the calendar agenda and the attendance strip are all reading the
+same rows — and it is why a stay booked through the full event form still shows
+up in the strip. `src/lib/attendance.ts` owns the shape; `attendance.test.ts`
+covers the round trip through both halves of the DST year.
+
+**There is no unique constraint behind that, so `setAttendance` enforces it.**
+The action looks up the caller's existing arrival on that Israel calendar day
+and *updates* it, deleting any extra rows it finds on the way. Two rows for one
+partner on one day render as two people, which is the one wrong answer this
+screen must never give. If a migration ever becomes applicable again, a unique
+index on (boat_id, user_id, arrival day) is the right belt to add to these
+braces — the DDL for this work could not be applied from the repo.
+
+**Israel wall-clock time goes through `src/lib/tz.ts`.** `zonedTimeToUtc()` and
+`zonedDateKey()`. A date a partner tapped is a *local calendar day*; the server
+runs in UTC and one partner reads the app from another timezone, so 08:00 on
+the 5th is 05:00Z in summer and 06:00Z in winter and neither may be assumed.
+Querying a day is `dayRange()`, a half-open UTC window — a naive `date::text`
+comparison drops the 08:00 stay it was meant to find.
 
 **Expense shares must sum to the expense amount.** Enforced by a deferrable
 constraint trigger, which is why expenses are always created through the
@@ -210,6 +238,24 @@ hours of each is a half-cloudy day that neither code alone would claim.
 07:00–09:00" under a day billed clear, so the fog is dropped as a *headline*
 without being dropped as a *fact*.
 
+**A day is three windows, and each is read from its own hours.** 08–12, 12–16,
+16–20 (`DAY_PERIODS`), summarised by `summarisePeriod()` from the provider's
+hourly series and judged by `periodVerdict()`. This is the wind-range rule
+taken one step further, and it is what let the card lose half its height
+without losing anything: a morning that is glass and an afternoon that blows
+were never the same forecast. Two rules hold it honest — a window the provider
+has no hours for reports `null` everywhere rather than borrowing a neighbour's
+numbers or falling back to a daily figure, and `choppy` is decided **per hour**,
+never by pairing the window's tallest wave with its shortest period, which
+would manufacture a sea state nobody forecast. The windows are fixed clock
+hours and deliberately are **not** clipped to daylight: 16:00–20:00 is a real
+question in January, and clipping emptied it every winter.
+
+The card is still a Server Component. `sailing-conditions.tsx` computes every
+day × window into plain strings and `conditions-panel.tsx` only chooses which
+to show — so paging costs no fetch and nothing gets a second chance to read the
+clock in the browser.
+
 Related: **gust *ratio* tests are useless on this coast.** Gusts run a steady
 2.8–3× the mean wind at every hour, including 02:00 in a dead calm, so
 `gustFactor >= 1.6` is true around the clock and separates nothing. Absolute
@@ -234,6 +280,38 @@ direction, and read the active panel back with an `IntersectionObserver` rooted
 on the track, which is direction-agnostic. Native scroll-snap is also what keeps
 a swipe feeling native and leaves pinch-to-zoom working in the photo viewer; a
 hand-rolled drag handler takes both away.
+
+**There is no notification infrastructure, and nothing pretends there is.** No
+push, no VAPID keys, no subscription table, no mail sender — sign-in
+deliberately sends no email at all, which is what keeps it clear of Supabase's
+project-wide SMTP limit. What exists is `src/lib/whatsapp.ts` and the share
+sheet, which is where these three people actually coordinate. Marking
+attendance therefore ends on a "עדכון השותפים" button that hands
+`attendanceMessage()` to `share()`; it is one deliberate tap because
+`navigator.share` needs transient activation and would be refused if fired
+after the server round trip. **Do not** wire a fake "sent" state to anything
+here. If real push is ever wanted it needs a subscriptions table, which needs
+migrations to be applicable again.
+
+**Google Calendar sync is optional, credential-gated, and reports itself.**
+`src/lib/google-calendar.ts`. One shared boat calendar reached with a *service
+account* — a signed JWT exchanged for an access token — rather than OAuth per
+partner, because that needs no consent screen, no refresh-token storage and no
+new table. The Google event id is derived from the Boatmate event id
+(`bm` + the UUID's hex, which is inside Google's base32hex character set), so
+there is no mapping to store and an edit cannot leave two entries behind.
+
+Three things about it are load-bearing:
+
+- **The database write happens first and sync cannot fail it.** Every failure
+  comes back as a `SyncResult` value, never a throw. Attendance saving must not
+  depend on a third party being up.
+- **`off` and `failed` are different.** Unset credentials are `off`, and
+  Settings says "לא מחובר" rather than the flow implying a sync that is not
+  happening; a *failed* call puts a warning under the saved confirmation, in
+  as many words. Silence in either case would be the app claiming a calendar
+  entry exists.
+- **Both calls carry `AbortSignal.timeout`**, as the Open-Meteo calls now do.
 
 **Storage is private.** Buckets `receipts`, `documents`, `media`. Object paths
 are always `{boat_id}/...` — the first path segment is what the storage policies

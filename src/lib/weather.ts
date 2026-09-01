@@ -42,6 +42,15 @@ export type HourReading = {
   windSpeedKn: number;
   windGustKn: number;
   weatherCode: number;
+  /**
+   * Optional because they come from series the card did not always ask for,
+   * and because the marine API is allowed to fail on its own. `null` means the
+   * provider had no value for that hour — never a stand-in zero.
+   */
+  temperatureC?: number | null;
+  windDirection?: number | null;
+  waveHeight?: number | null;
+  wavePeriod?: number | null;
 };
 
 /**
@@ -87,7 +96,145 @@ export type DailyForecast = {
   sunset: string | null;
   /** Sunrise to sunset, hour by hour. */
   hours: HourReading[];
+  /** 08–12, 12–16, 16–20, each summarised from its own hours. */
+  periods: PeriodForecast[];
 };
+
+/* -------------------------------------------------------------------------- */
+/* Sub-daily periods                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The three windows a sailing day is actually planned in.
+ *
+ * The same argument as the wind range and the day condition, taken one step
+ * further: on a sea-breeze coast the morning and the afternoon are different
+ * days. One set of numbers for "Thursday" describes neither, so every day is
+ * split here and each window is summarised from **its own hours** — nothing is
+ * interpolated, and a window the provider has no hours for reports nothing
+ * rather than borrowing its neighbour's.
+ *
+ * Fixed clock windows, not sun-relative ones: "אחר הצהריים" means 16:00 to a
+ * person planning a sail, whatever the sun is doing.
+ */
+export const DAY_PERIODS = [
+  { key: "morning", label: "בוקר", clock: "08:00–12:00", fromHour: 8, toHour: 12 },
+  { key: "midday", label: "צהריים", clock: "12:00–16:00", fromHour: 12, toHour: 16 },
+  { key: "evening", label: "אחה״צ", clock: "16:00–20:00", fromHour: 16, toHour: 20 },
+] as const;
+
+export type PeriodKey = (typeof DAY_PERIODS)[number]["key"];
+
+export type PeriodForecast = {
+  key: PeriodKey;
+  /** The provider's hours inside the window. Empty means "we do not know". */
+  hours: HourReading[];
+  tempMinC: number | null;
+  tempMaxC: number | null;
+  /** What to print, by the same daylight-share rule the day headline uses. */
+  weatherCode: number | null;
+  /** The window's worst hour — what a warning may be drawn from. */
+  severeCode: number | null;
+  windMinKn: number | null;
+  windMaxKn: number | null;
+  gustMaxKn: number | null;
+  windDirection: number | null;
+  /** Highest wave in the window, and the shortest (choppiest) period in it. */
+  waveHeight: number | null;
+  wavePeriod: number | null;
+  /** True when any single hour in the window is short and steep. */
+  choppy: boolean;
+};
+
+const defined = (values: Array<number | null | undefined>): number[] =>
+  values.filter((value): value is number => typeof value === "number");
+
+const min = (values: number[]): number | null =>
+  values.length ? Math.min(...values) : null;
+
+const max = (values: number[]): number | null =>
+  values.length ? Math.max(...values) : null;
+
+/**
+ * Summarise one window from the hours that fall inside it.
+ *
+ * Wave height takes the window's maximum and wave period its minimum — the two
+ * ends that make a sea uncomfortable — but `choppy` is decided **per hour**,
+ * never from that pair, because the tallest wave and the shortest period need
+ * not be the same hour and pairing them would invent a sea state nobody
+ * forecast.
+ */
+export function summarisePeriod(
+  key: PeriodKey,
+  hours: HourReading[],
+): PeriodForecast {
+  const winds = hours.map((hour) => hour.windSpeedKn);
+  const gusts = hours.map((hour) => hour.windGustKn);
+  const temps = defined(hours.map((hour) => hour.temperatureC));
+  const heights = defined(hours.map((hour) => hour.waveHeight));
+  const periods = defined(hours.map((hour) => hour.wavePeriod));
+  const directions = defined(hours.map((hour) => hour.windDirection));
+
+  return {
+    key,
+    hours,
+    tempMinC: min(temps),
+    tempMaxC: max(temps),
+    weatherCode: hours.length ? dayCondition(hours) : null,
+    severeCode: hours.length ? severeCondition(hours) : null,
+    windMinKn: min(winds),
+    windMaxKn: max(winds),
+    gustMaxKn: max(gusts),
+    // The window's prevailing direction, taken as its middle hour rather than
+    // an average — averaging 350° and 10° gives 180°, the opposite way.
+    windDirection: directions.length
+      ? directions[Math.floor(directions.length / 2)]
+      : null,
+    waveHeight: max(heights),
+    wavePeriod: min(periods),
+    choppy: hours.some((hour) => isChoppy(hour.waveHeight ?? null, hour.wavePeriod ?? null)),
+  };
+}
+
+/**
+ * Can we go out in *this window*?
+ *
+ * Unlike `dailyVerdict`, which asks whether a day has a window in it, this one
+ * is already looking at a window — so gusts are counted hour by hour and the
+ * answer distinguishes "calm throughout" from "builds while you are out",
+ * which is the difference that matters once you have committed to four hours.
+ */
+export function periodVerdict(period: PeriodForecast): Verdict {
+  if (period.hours.length === 0) {
+    return { label: "אין נתונים לשעות האלה", tone: "caution" };
+  }
+
+  if ((period.severeCode ?? 0) >= 95) {
+    return { label: "סופת רעמים — לא יוצאים", tone: "poor" };
+  }
+  if ((period.gustMaxKn ?? 0) >= 30 || (period.waveHeight ?? 0) >= 2) {
+    return { label: "ים סוער — לא מומלץ", tone: "poor" };
+  }
+  if (period.choppy) {
+    return { label: "ים קצוץ — לא נוח", tone: "caution" };
+  }
+
+  const calmHours = period.hours.filter(
+    (hour) => hour.windGustKn < CALM_GUST_KN,
+  ).length;
+
+  if (calmHours === 0) {
+    return { label: "משבים חזקים לאורך החלון", tone: "caution" };
+  }
+  if (calmHours < period.hours.length) {
+    return { label: "הרוח מתחזקת בתוך החלון", tone: "caution" };
+  }
+  if ((period.windMaxKn ?? 0) < 5) {
+    return { label: "כמעט בלי רוח", tone: "caution" };
+  }
+
+  return { label: "תנאים טובים להפלגה", tone: "good" };
+}
 
 /**
  * The gust a day is considered calm below.

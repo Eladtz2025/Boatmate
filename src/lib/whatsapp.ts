@@ -135,3 +135,29 @@ export function documentMessage(
   }
   return lines.join("\n");
 }
+
+/**
+ * "אלעד מגיע לסירה — לינה, יום שבת 5.9".
+ *
+ * The boat has no push channel and no mail sender — sign-in deliberately sends
+ * no email at all, which is what keeps it clear of Supabase's project-wide SMTP
+ * limit. The group chat is where these three people actually coordinate, so
+ * "notify the other partners" means this message, handed to the share sheet.
+ */
+export function attendanceMessage(
+  boatName: string,
+  input: {
+    partnerName: string;
+    stayLabel: string;
+    dateLabel: string;
+    cancelled?: boolean;
+  },
+): string {
+  const headline = input.cancelled
+    ? `❌ ${input.partnerName} ביטל/ה הגעה`
+    : `⚓ ${input.partnerName} מגיע/ה לסירה`;
+
+  const lines = [`*${boatName}*`, "", headline, input.dateLabel];
+  if (!input.cancelled) lines.push(input.stayLabel);
+  return lines.join("\n");
+}

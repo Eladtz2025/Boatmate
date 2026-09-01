@@ -2,8 +2,10 @@ import "server-only";
 import { cache } from "react";
 import { createClient } from "./supabase/server";
 import { computeBalances, type ExpenseInput, type TransferInput } from "./balance";
+import { dayRange, stayOf, type Attendance } from "./attendance";
 import { BUCKETS } from "./constants";
 import { HERO_PHOTO_ID, type GalleryPhoto } from "./gallery";
+import { zonedDateKey } from "./tz";
 
 /**
  * Server-side reads. Every query is scoped by RLS to boats the caller belongs
@@ -439,49 +441,81 @@ export const getNextEvent = cache(async (boatId: string): Promise<CalendarItem |
   return items.find((item) => item.kind === "usage") ?? items[0] ?? null;
 });
 
-/** Arrival events for partners who fly in — shown on the home screen. */
-export const getNextArrival = cache(async (boatId: string) => {
-  const supabase = await createClient();
-  return maybeRow(
-    await supabase
-      .from("events")
-      .select("id, title, starts_at, ends_at, user_id")
-      .eq("boat_id", boatId)
-      .eq("kind", "arrival")
-      .gte("starts_at", new Date().toISOString())
-      .order("starts_at")
-      .limit(1)
-      .maybeSingle(),
-    "את הגעת השותף",
-  );
-});
+/* -------------------------------------------------------------------------- */
+/* Attendance — "who is coming to the boat, and when?"                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Attendance rides on `events` with `kind = 'arrival'`; see lib/attendance.ts
+ * for why there is no separate table. Read over a date *range* in Israel time,
+ * because the strip is keyed by local calendar days and a UTC-shaped window
+ * would drop an 08:00 stay on the first day of it.
+ */
+export const getAttendance = cache(
+  async (boatId: string, fromKey: string, toKey: string): Promise<Attendance[]> => {
+    const supabase = await createClient();
+    const from = dayRange(fromKey).from;
+    const to = dayRange(toKey).to;
+
+    const data = rows(
+      await supabase
+        .from("events")
+        .select("id, user_id, starts_at, ends_at")
+        .eq("boat_id", boatId)
+        .eq("kind", "arrival")
+        .not("user_id", "is", null)
+        .gte("starts_at", from)
+        .lt("starts_at", to)
+        .order("starts_at"),
+      "את ההגעות",
+    );
+
+    return data.map((row) => ({
+      eventId: row.id,
+      userId: row.user_id as string,
+      dateKey: zonedDateKey(row.starts_at),
+      stay: stayOf(row.starts_at, row.ends_at),
+    }));
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* Shared checklist                                                           */
+/* -------------------------------------------------------------------------- */
 
 export type TaskRow = {
   id: string;
   title: string;
   done: boolean;
-  dueOn: string | null;
-  assignedTo: string | null;
 };
 
-export const getOpenTasks = cache(async (boatId: string): Promise<TaskRow[]> => {
+/**
+ * The boat's shared checklist — one list, every partner, nothing else.
+ *
+ * It reads the `tasks` table, which already had exactly these three columns
+ * doing nothing with them: `due_on` and `assigned_to` are left untouched and
+ * unexposed on purpose. This is a Google Keep list, not a task manager.
+ *
+ * Open items first, then the done ones, newest last within each group, so a
+ * tick moves a row down rather than making it vanish — which is what lets it
+ * be un-ticked.
+ */
+export const getChecklist = cache(async (boatId: string): Promise<TaskRow[]> => {
   const supabase = await createClient();
   const data = rows(
     await supabase
       .from("tasks")
-      .select("id, title, done, due_on, assigned_to")
+      .select("id, title, done, created_at")
       .eq("boat_id", boatId)
-      .eq("done", false)
-      .order("due_on", { nullsFirst: false }),
-    "את המשימות",
+      .order("done")
+      .order("created_at"),
+    "את הרשימה המשותפת",
   );
 
   return data.map((row) => ({
     id: row.id,
     title: row.title,
     done: row.done,
-    dueOn: row.due_on,
-    assignedTo: row.assigned_to,
   }));
 });
 

@@ -1,56 +1,51 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Plane, Scale } from "lucide-react";
+import { ChevronLeft, Moon, ReceiptText, Sun, Users } from "lucide-react";
 import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
 import {
   SailingConditions,
   SailingConditionsSkeleton,
 } from "@/components/home/sailing-conditions";
-import { QuickActions } from "@/components/home/quick-actions";
-import {
-  GalleryTrigger,
-  PhotoGallery,
-} from "@/components/home/photo-gallery";
-import { TasksCard } from "@/components/home/tasks-card";
+import { ChecklistCard } from "@/components/home/checklist-card";
+import { GalleryTrigger, PhotoGallery } from "@/components/home/photo-gallery";
 import { Card, TileLabel } from "@/components/ui/card";
-import { headlineSettlement } from "@/lib/balance";
-import { formatAgorotAbs, formatDateRange, daysUntil } from "@/lib/format";
+import { Avatar } from "@/components/ui/avatar";
+import { STAY_LABEL, STRIP_DAYS } from "@/lib/attendance";
+import { addDaysToKey, todayKey } from "@/lib/tz";
+import { formatDayMonth, daysUntil } from "@/lib/format";
+import { cn } from "@/lib/cn";
 import {
-  getBalances,
+  getAttendance,
   getBoat,
+  getChecklist,
   getDocuments,
   getGalleryPhotos,
-  getMemberNames,
-  getNextArrival,
-  getOpenTasks,
+  getMembers,
 } from "@/lib/data";
 
 export const metadata = { title: "הבית — Boatmate" };
 
-/** `?new=photo` — the home quick action links here. */
-const wantsNewPhoto = (value: string | string[] | undefined): boolean =>
-  (Array.isArray(value) ? value[0] : value) === "photo";
-
-export default async function HomePage({
-  searchParams,
-}: {
-  searchParams: Promise<{ new?: string | string[] }>;
-}) {
-  const [params, boat] = await Promise.all([searchParams, getBoat()]);
+/**
+ * The home screen answers three questions and stops: what is the sea doing,
+ * what does the boat need, and who is coming. The balance tile, the open-task
+ * summary and the four-way shortcut row are gone — every one of them was a
+ * second door into a screen the bottom nav already reaches, and they were what
+ * made this page a directory instead of a dashboard.
+ */
+export default async function HomePage() {
+  const boat = await getBoat();
   if (!boat) return null; // layout redirects to /onboarding
 
-  const [balances, names, arrival, tasks, photos, documents] =
-    await Promise.all([
-      getBalances(boat.id),
-      getMemberNames(boat.id),
-      getNextArrival(boat.id),
-      getOpenTasks(boat.id),
-      getGalleryPhotos(boat.id, boat.photoPath),
-      getDocuments(boat.id),
-    ]);
+  const today = todayKey();
 
-  const headline = headlineSettlement(balances);
+  const [members, attendance, checklist, photos, documents] = await Promise.all([
+    getMembers(boat.id),
+    getAttendance(boat.id, today, addDaysToKey(today, STRIP_DAYS - 1)),
+    getChecklist(boat.id),
+    getGalleryPhotos(boat.id, boat.photoPath),
+    getDocuments(boat.id),
+  ]);
 
   // Anything expired or inside its reminder window counts as an alert.
   const alerts = documents.filter(
@@ -61,13 +56,12 @@ export default async function HomePage({
   // Hero first, so this is the photo the gallery also opens on.
   const heroUrl = photos[0]?.url ?? null;
 
+  const nameOf = new Map(members.map((member) => [member.userId, member]));
+  const nextArrivals = attendance.slice(0, 3);
+
   return (
     <main className="flex-1 pb-24">
-      <PhotoGallery
-        boatId={boat.id}
-        photos={photos}
-        openNew={wantsNewPhoto(params.new)}
-      >
+      <PhotoGallery boatId={boat.id} photos={photos} openNew={false}>
         <AppHeader
           boatName={boat.name}
           tagline={boat.tagline}
@@ -84,74 +78,83 @@ export default async function HomePage({
           />
         </GalleryTrigger>
 
-        {/* Conditions get the full width: four readings plus the verdict do not
-            fit a half tile, and it is the first thing anyone opens the app for. */}
-        <div className="mt-4 px-4">
+        <div className="mt-4 space-y-3 px-4">
           {/* Suspense so a cold forecast streams in rather than holding up the
               whole page; on a warm cache it renders straight into the HTML. */}
           <Suspense fallback={<SailingConditionsSkeleton />}>
             <SailingConditions />
           </Suspense>
-        </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-3 px-4">
-          {/* Partner arrival */}
-          <Card className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <TileLabel>הגעת שותף</TileLabel>
-              <Plane className="size-4 text-teal-400" aria-hidden />
-            </div>
-            {arrival ? (
-              <>
-                <p className="line-clamp-2 text-sm font-medium leading-snug">
-                  {arrival.title}
-                </p>
-                <p className="numeric mt-auto text-xs text-ink-muted">
-                  {formatDateRange(arrival.starts_at, arrival.ends_at)}
-                </p>
-              </>
-            ) : (
-              <p className="text-xs text-ink-subtle">לא מתוכננת הגעה</p>
-            )}
-          </Card>
+          <ChecklistCard boatId={boat.id} items={checklist} />
 
-          {/* Balance */}
-          <Card className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <TileLabel>יתרה בין שותפים</TileLabel>
-              <Scale className="size-4 text-teal-400" aria-hidden />
-            </div>
+          {/* Partner arrival — the calendar's answer, surfaced. Tapping it goes
+              to the strip where the answer can be changed. */}
+          <Link href="/calendar" className="block">
+            <Card className="transition active:scale-[0.99] hover:border-teal-400/30">
+              <div className="mb-2 flex items-center justify-between">
+                <TileLabel>הגעת שותף</TileLabel>
+                <span className="flex items-center gap-1 text-teal-400">
+                  <Users className="size-4" aria-hidden />
+                  <ChevronLeft className="size-3.5" aria-hidden />
+                </span>
+              </div>
 
-            {headline ? (
-              <>
-                <p className="text-xs leading-snug text-ink-muted">
-                  {names[headline.fromUser] ?? "שותף"} חייב ל
-                  {names[headline.toUser] ?? "שותף"}
-                </p>
-                <p className="numeric text-2xl font-bold leading-none">
-                  {formatAgorotAbs(headline.amountAgorot)}
-                </p>
-              </>
-            ) : (
-              <p className="text-sm font-medium text-teal-400">כולם מאוזנים</p>
-            )}
+              {nextArrivals.length === 0 ? (
+                <p className="text-xs text-ink-subtle">לא מתוכננת הגעה</p>
+              ) : (
+                <ul className="space-y-2">
+                  {nextArrivals.map((row) => {
+                    const member = nameOf.get(row.userId);
+                    const Icon = row.stay === "overnight" ? Moon : Sun;
 
-            <Link
-              href="/finances"
-              className="mt-auto rounded-full bg-teal-400 px-3 py-1.5 text-center text-xs font-semibold text-hull-950 transition hover:bg-teal-500"
-            >
-              צפה בפירוט
-            </Link>
-          </Card>
+                    return (
+                      <li key={row.eventId} className="flex items-center gap-2.5">
+                        <Avatar
+                          name={member?.name ?? "שותף"}
+                          color={member?.color}
+                          size="xs"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                          {member?.name ?? "שותף"}
+                        </span>
+                        <span className="numeric shrink-0 text-xs text-ink-muted">
+                          {formatDayMonth(row.dateKey)}
+                        </span>
+                        <Icon
+                          className={cn(
+                            "size-3.5 shrink-0",
+                            row.stay === "overnight"
+                              ? "text-ink-muted"
+                              : "text-warning",
+                          )}
+                          aria-label={STAY_LABEL[row.stay]}
+                        />
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Card>
+          </Link>
 
-          {/* Full width: there was a photo tile beside this, but the hero photo
-              is the way into the gallery now and a second door to the same room
-              was not worth a grid slot. Task titles get the room instead. */}
-          <TasksCard tasks={tasks} className="col-span-2" />
-        </div>
-
-        <div className="mt-4 px-4">
-          <QuickActions />
+          {/* New expense — the one thing on this screen that is a shortcut, and
+              the only one that earned its place: it is written down at the till,
+              not later. */}
+          <Link
+            href="/finances?new=expense"
+            className="card flex items-center gap-3 p-4 transition active:scale-[0.99] hover:border-teal-400/30"
+          >
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-tile bg-teal-400/15 text-teal-400">
+              <ReceiptText className="size-5" aria-hidden />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium text-ink">הוצאה חדשה</span>
+              <span className="block text-xs text-ink-muted">
+                רישום תשלום וחלוקה בין השותפים
+              </span>
+            </span>
+            <ChevronLeft className="size-4 shrink-0 text-ink-subtle" aria-hidden />
+          </Link>
         </div>
       </PhotoGallery>
     </main>

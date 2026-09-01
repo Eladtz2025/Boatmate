@@ -88,6 +88,7 @@ function day(overrides: Partial<DailyForecast> = {}): DailyForecast {
     sunrise: null,
     sunset: null,
     hours: SEA_BREEZE,
+    periods: [],
     ...overrides,
   };
 }

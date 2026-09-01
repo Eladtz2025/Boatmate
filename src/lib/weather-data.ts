@@ -1,10 +1,13 @@
 import "server-only";
 import {
+  DAY_PERIODS,
   TEL_AVIV,
   dayCondition,
   severeCondition,
+  summarisePeriod,
   type DailyForecast,
   type HourReading,
+  type PeriodForecast,
   type Weather,
 } from "./weather";
 
@@ -23,6 +26,13 @@ import {
  */
 
 const REVALIDATE = 900; // 15 minutes
+
+/**
+ * Neither call is allowed to hold the home screen open. Without this a hung
+ * connection blocks the render until the platform's own limit, and the one
+ * screen the app opens to sits on a skeleton.
+ */
+const TIMEOUT_MS = 8000;
 
 /** Today plus the next four — what the card's carousel pages through. */
 const FORECAST_DAYS = 5;
@@ -66,41 +76,63 @@ function firstDaylightHour(sunriseLocal: string): number {
   return minutes > 0 ? localHour(sunriseLocal) + 1 : localHour(sunriseLocal);
 }
 
-/**
- * Everything between sunrise and sunset — nobody is planning a 03:00 sail.
- *
- * This window is also what keeps the day's headline honest. Tel Aviv's summer
- * fog forms before dawn and is gone by the time anyone looks at the app; kept
- * in, it counts toward the day's condition and can end up naming it.
- */
-function daylightHours(
-  times: string[],
-  wind: number[],
-  gusts: number[],
-  codes: number[],
-  date: string,
-  sunriseLocal: string | undefined,
-  sunsetLocal: string | undefined,
-): HourReading[] {
-  // Without a sun time, fall back to a generous daylight span rather than
-  // dropping the whole profile.
-  const from = sunriseLocal ? firstDaylightHour(sunriseLocal) : 6;
-  const to = sunsetLocal ? localHour(sunsetLocal) : 20;
+/** Everything the two APIs give us per hour, indexed the way they return it. */
+type HourlySeries = {
+  time: string[];
+  wind: number[];
+  gust: number[];
+  code: number[];
+  temperature: number[];
+  direction: number[];
+  /** Marine is a separate service and is allowed to be missing entirely. */
+  wave: Map<string, { height: number | null; period: number | null }>;
+};
 
+/**
+ * The hours of one date inside `[fromHour, toHour)`.
+ *
+ * One extraction for both jobs the card has: the daylight profile, and the
+ * three fixed clock windows. The windows deliberately do **not** clip to
+ * daylight — 16:00–20:00 is a real question in January even though the sun is
+ * down for half of it, and clipping would have silently emptied that window
+ * every winter.
+ */
+function hoursInRange(
+  series: HourlySeries,
+  date: string,
+  fromHour: number,
+  toHour: number,
+): HourReading[] {
   const hours: HourReading[] = [];
-  for (const [index, timestamp] of times.entries()) {
+
+  for (const [index, timestamp] of series.time.entries()) {
     if (!timestamp.startsWith(date)) continue;
     const hour = localHour(timestamp);
-    if (hour < from || hour > to) continue;
+    if (hour < fromHour || hour >= toHour) continue;
+
+    const sea = series.wave.get(timestamp);
+
     hours.push({
       hour,
-      windSpeedKn: round(wind[index]),
-      windGustKn: round(gusts[index]),
-      weatherCode: round(codes[index]),
+      windSpeedKn: round(series.wind[index]),
+      windGustKn: round(series.gust[index]),
+      weatherCode: round(series.code[index]),
+      temperatureC: numberOrNull(series.temperature[index]),
+      windDirection: numberOrNull(series.direction[index]),
+      waveHeight: sea?.height ?? null,
+      wavePeriod: sea?.period ?? null,
     });
   }
+
   return hours;
 }
+
+/** Fetch that gives up rather than holding the page. */
+const get = (url: string) =>
+  fetch(url, {
+    next: { revalidate: REVALIDATE },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
 
 export async function getConditions(): Promise<Weather | null> {
   const { latitude, longitude } = TEL_AVIV;
@@ -109,20 +141,21 @@ export async function getConditions(): Promise<Weather | null> {
     `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
     `&current=temperature_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,visibility` +
     `&daily=sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_direction_10m_dominant` +
-    `&hourly=wind_speed_10m,wind_gusts_10m,weather_code` +
+    `&hourly=wind_speed_10m,wind_gusts_10m,weather_code,temperature_2m,wind_direction_10m` +
     `&wind_speed_unit=kn&timezone=auto&forecast_days=${FORECAST_DAYS}`;
 
   const marineUrl =
     `https://marine-api.open-meteo.com/v1/marine?latitude=${latitude}&longitude=${longitude}` +
     `&current=wave_height,wave_period,wave_direction,sea_surface_temperature` +
     `&daily=wave_height_max,wave_period_max` +
+    `&hourly=wave_height,wave_period` +
     `&timezone=auto&forecast_days=${FORECAST_DAYS}`;
 
   try {
     const [forecastResponse, marineResponse] = await Promise.all([
-      fetch(forecastUrl, { next: { revalidate: REVALIDATE } }),
+      get(forecastUrl),
       // Sea state is a bonus; losing it must not cost us the whole card.
-      fetch(marineUrl, { next: { revalidate: REVALIDATE } }).catch(() => null),
+      get(marineUrl).catch(() => null),
     ]);
 
     if (!forecastResponse.ok) return null;
@@ -156,20 +189,50 @@ export async function getConditions(): Promise<Weather | null> {
       ]),
     );
 
+    // Marine hours are keyed by their own timestamp for the same reason: the
+    // two series are the same length in practice and must not be assumed to be.
+    const marineHourly = marine?.hourly ?? {};
+    const waveByHour = new Map<string, { height: number | null; period: number | null }>(
+      ((marineHourly.time ?? []) as string[]).map((timestamp, index) => [
+        timestamp,
+        {
+          height: numberOrNull(marineHourly.wave_height?.[index]),
+          period: numberOrNull(marineHourly.wave_period?.[index]),
+        },
+      ]),
+    );
+
     const hourly = forecast.hourly ?? {};
     const hourlyCodes = (hourly.weather_code ?? []) as number[];
+
+    const series: HourlySeries = {
+      time: (hourly.time ?? []) as string[],
+      wind: (hourly.wind_speed_10m ?? []) as number[],
+      gust: (hourly.wind_gusts_10m ?? []) as number[],
+      code: hourlyCodes,
+      temperature: (hourly.temperature_2m ?? []) as number[],
+      direction: (hourly.wind_direction_10m ?? []) as number[],
+      wave: waveByHour,
+    };
 
     const days: DailyForecast[] = ((daily.time ?? []) as string[]).map(
       (date, index) => {
         const seaDay = seaByDate.get(date);
-        const hours = daylightHours(
-          hourly.time ?? [],
-          hourly.wind_speed_10m ?? [],
-          hourly.wind_gusts_10m ?? [],
-          hourlyCodes,
-          date,
-          daily.sunrise?.[index],
-          daily.sunset?.[index],
+
+        // Without a sun time, fall back to a generous daylight span rather than
+        // dropping the whole profile.
+        const sunriseLocal: string | undefined = daily.sunrise?.[index];
+        const sunsetLocal: string | undefined = daily.sunset?.[index];
+        const fromHour = sunriseLocal ? firstDaylightHour(sunriseLocal) : 6;
+        const toHour = sunsetLocal ? localHour(sunsetLocal) + 1 : 21;
+
+        const hours = hoursInRange(series, date, fromHour, toHour);
+
+        const periods: PeriodForecast[] = DAY_PERIODS.map((period) =>
+          summarisePeriod(
+            period.key,
+            hoursInRange(series, date, period.fromHour, period.toHour),
+          ),
         );
 
         // Ranges over the daylight hours we actually kept, so the floor is the
@@ -196,9 +259,10 @@ export async function getConditions(): Promise<Weather | null> {
           windDirection: daily.wind_direction_10m_dominant?.[index] ?? 0,
           waveHeight: seaDay?.height ?? null,
           wavePeriod: seaDay?.period ?? null,
-          sunrise: resolveInstant(daily.sunrise?.[index], offsetSeconds),
-          sunset: resolveInstant(daily.sunset?.[index], offsetSeconds),
+          sunrise: resolveInstant(sunriseLocal, offsetSeconds),
+          sunset: resolveInstant(sunsetLocal, offsetSeconds),
           hours,
+          periods,
         };
       },
     );
