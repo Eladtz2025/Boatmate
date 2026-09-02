@@ -25,10 +25,11 @@ import { createAdminClient } from "./supabase/admin";
  *   `supabase/migrations/`. Until it is applied every call here comes back
  *   `unavailable` with the reason, which is what the Settings screen prints.
  *
- * Sends go through the **service role**, on purpose. A partner marking
- * attendance has to read *other* partners' endpoints, and the RLS policy on
- * that table deliberately restricts writes to your own rows; reading crew
- * endpoints to deliver to them is a server job, not a browser one.
+ * Sends go through the **service role**, on purpose, and that is what lets the
+ * table be locked down properly. RLS on `push_subscriptions` is own-rows-only
+ * for every operation — a partner cannot even *read* a crewmate's endpoints,
+ * which would otherwise disclose which devices they own. Fanning out to the
+ * crew is a server job precisely so no browser ever needs that permission.
  */
 
 export type NotifyStatus = "sent" | "none" | "unavailable" | "failed";

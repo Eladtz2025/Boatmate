@@ -48,6 +48,18 @@ values ('b0a70001-0000-0000-0000-000000000001', 'Alice insurance', 'insurance',
         'b0a70001-0000-0000-0000-000000000001/secret.pdf',
         'a11ce000-0000-0000-0000-000000000001');
 
+-- One push subscription per crewmate on Alice's boat. Unlike everything above,
+-- these are NOT shared crew data: an endpoint is a delivery address for one
+-- person's device, so the policies must isolate Bob from Alice, not just
+-- Mallory from both.
+insert into public.push_subscriptions (boat_id, user_id, endpoint, p256dh, auth)
+values ('b0a70001-0000-0000-0000-000000000001',
+        'a11ce000-0000-0000-0000-000000000001',
+        'https://push.invalid/alice-phone', 'alice-p256dh', 'alice-auth'),
+       ('b0a70001-0000-0000-0000-000000000001',
+        'b0b00000-0000-0000-0000-000000000002',
+        'https://push.invalid/bob-phone', 'bob-p256dh', 'bob-auth');
+
 do $$
 declare
   v_count int;
@@ -132,6 +144,25 @@ begin
     raise notice 'RLS 8 PASS — add_partner_by_email refuses non-members';
   end;
 
+  -- A stranger sees no endpoints at all.
+  select count(*) into v_count from public.push_subscriptions;
+  if v_count <> 0 then
+    raise exception 'RLS 8b FAILED — Mallory sees % push subscriptions', v_count;
+  end if;
+  raise notice 'RLS 8b PASS — Mallory cannot read anyone''s push endpoints';
+
+  -- Nor can she park her own endpoint against a boat she is not on, which
+  -- would enrol her device in that crew's notification fan-out.
+  begin
+    insert into public.push_subscriptions (boat_id, user_id, endpoint, p256dh, auth)
+    values ('b0a70001-0000-0000-0000-000000000001',
+            'dead0000-0000-0000-0000-000000000003',
+            'https://push.invalid/mallory', 'm-p256dh', 'm-auth');
+    raise exception 'RLS 8c FAILED — Mallory subscribed to Alice''s boat';
+  exception when insufficient_privilege then
+    raise notice 'RLS 8c PASS — Mallory cannot subscribe to a boat she is not on';
+  end;
+
   ------------------------------------------------------------------ as Bob
   perform set_config('request.jwt.claims',
     '{"sub":"b0b00000-0000-0000-0000-000000000002","role":"authenticated"}', true);
@@ -160,6 +191,58 @@ begin
     raise exception 'RLS 11 FAILED — Bob can see the stranger Mallory''s profile';
   end if;
   raise notice 'RLS 11 PASS — profiles visible to crewmates only';
+
+  -- Push subscriptions are the one thing a crewmate may NOT see. Everything
+  -- else on this boat is joint business; which devices Alice owns is not, and
+  -- an endpoint is what it takes to make her phone buzz. Bob has one row of
+  -- his own on this boat and must see exactly that one.
+  select count(*) into v_count from public.push_subscriptions;
+  if v_count <> 1 then
+    raise exception 'RLS 12 FAILED — Bob sees % push subscriptions, expected only his own', v_count;
+  end if;
+
+  select exists (select 1 from public.push_subscriptions
+                 where user_id = 'a11ce000-0000-0000-0000-000000000001') into v_ok;
+  if v_ok then
+    raise exception 'RLS 12 FAILED — Bob can read his crewmate Alice''s push endpoint';
+  end if;
+  raise notice 'RLS 12 PASS — push endpoints are private to their own device owner';
+
+  -- Nor may he write one for her, which would be the power to notify her at will.
+  begin
+    insert into public.push_subscriptions (boat_id, user_id, endpoint, p256dh, auth)
+    values ('b0a70001-0000-0000-0000-000000000001',
+            'a11ce000-0000-0000-0000-000000000001',
+            'https://push.invalid/forged', 'f-p256dh', 'f-auth');
+    raise exception 'RLS 13 FAILED — Bob inserted a push subscription for Alice';
+  exception when insufficient_privilege then
+    raise notice 'RLS 13 PASS — Bob cannot subscribe a device on Alice''s behalf';
+  end;
+
+  -- ...and he cannot reach hers to change or delete it. RLS makes the row
+  -- invisible rather than raising, so the check is that nothing was touched.
+  update public.push_subscriptions
+     set endpoint = 'https://push.invalid/hijacked'
+   where user_id = 'a11ce000-0000-0000-0000-000000000001';
+  if found then
+    raise exception 'RLS 14 FAILED — Bob updated Alice''s push subscription';
+  end if;
+
+  delete from public.push_subscriptions
+   where user_id = 'a11ce000-0000-0000-0000-000000000001';
+  if found then
+    raise exception 'RLS 14 FAILED — Bob deleted Alice''s push subscription';
+  end if;
+  raise notice 'RLS 14 PASS — Bob cannot modify or remove Alice''s push subscription';
+
+  -- His own row is his to remove, though — otherwise turning notifications off
+  -- on a device would be impossible.
+  delete from public.push_subscriptions
+   where user_id = 'b0b00000-0000-0000-0000-000000000002';
+  if not found then
+    raise exception 'RLS 15 FAILED — Bob cannot delete his own push subscription';
+  end if;
+  raise notice 'RLS 15 PASS — Bob can turn his own device off';
 
   reset role;
   raise notice '=== RLS HOLDS ===';

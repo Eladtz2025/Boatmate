@@ -11,12 +11,21 @@
 -- partners' devices, and the server has to know where those are. Nothing else
 -- in this schema could answer that.
 --
--- Permission model matches the rest of the app — membership in boat_members is
--- the gate — with one deliberate tightening: a row may only be written for
--- yourself. Every other boat-scoped table lets any partner write any row,
--- which is right for shared money and shared documents; it is not right for a
--- delivery address, where the ability to insert somebody else's endpoint is
--- the ability to have their phone buzz at your choosing.
+-- Permission model: **your own rows, and nothing else.** This is the one table
+-- in the schema that does not follow "all partners equal".
+--
+-- Every other boat-scoped table lets any partner read and write any row, which
+-- is right for shared money, shared documents and a shared calendar — those are
+-- the crew's joint business. A push subscription is not. It is a delivery
+-- address for a specific person's specific device: reading one tells you which
+-- devices a partner owns and when they registered them, and writing one is the
+-- ability to make their phone buzz at your choosing. Neither is anybody else's
+-- business, including a crewmate's.
+--
+-- Nothing is lost by closing it, because no client ever needs to read another
+-- partner's row: `notifyBoat()` (src/lib/push.ts) sends through the service
+-- role, which bypasses RLS entirely. The browser only ever writes its own
+-- subscription and deletes it again.
 -- ============================================================================
 
 create table public.push_subscriptions (
@@ -44,22 +53,25 @@ create index push_subscriptions_boat_idx
 
 alter table public.push_subscriptions enable row level security;
 
--- Read: partners may see that a crewmate has notifications on, which is what
--- lets the UI say "3 מכשירים" honestly. The keys are not secrets — they are
--- write-only material for the push service — and the send happens server-side
--- with the service role regardless.
-create policy "members read push subscriptions"
+-- Read: your own devices only. A crewmate's endpoints are not readable, and
+-- there is no client that wants them — the send is a service-role job.
+create policy "own push subscription select"
   on public.push_subscriptions for select to authenticated
-  using (public.is_boat_member(boat_id));
+  using (user_id = auth.uid());
 
--- Write: your own rows only. See the note above.
+-- Insert: for yourself, on a boat you actually belong to. Membership is still
+-- checked so a row cannot be parked against a boat the caller has nothing to
+-- do with, which would put an endpoint in that crew's notification fan-out.
 create policy "own push subscription insert"
   on public.push_subscriptions for insert to authenticated
   with check (user_id = auth.uid() and public.is_boat_member(boat_id));
 
+-- Update: your own rows, and you may not hand one to somebody else. `using`
+-- gates which rows you may touch; `with check` gates what they may become —
+-- without the second, an update could move a row onto another user_id.
 create policy "own push subscription update"
   on public.push_subscriptions for update to authenticated
-  using (user_id = auth.uid() and public.is_boat_member(boat_id))
+  using (user_id = auth.uid())
   with check (user_id = auth.uid() and public.is_boat_member(boat_id));
 
 create policy "own push subscription delete"

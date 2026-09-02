@@ -303,12 +303,17 @@ key pair we generate ourselves and the service worker that already shipped.
 
 Three things here are load-bearing:
 
-- **The send goes through the service role.** A partner marking attendance has
-  to reach the *other* partners' endpoints. The RLS policy on that table is
-  deliberately tighter than every other boat-scoped table: read is crew-wide,
-  but **write is your own rows only**. Any partner writing any row is right for
-  shared money; it is not right for a delivery address, where inserting
-  somebody else's endpoint is the power to make their phone buzz.
+- **The send goes through the service role**, and that is what lets the table
+  be locked down. `push_subscriptions` is the one table in the schema that does
+  **not** follow "all partners equal": RLS is own-rows-only on select, insert,
+  update and delete alike. Shared money and shared documents are the crew's
+  joint business; a delivery address for one person's phone is not — reading a
+  crewmate's rows discloses which devices they own, and writing one is the
+  power to make their phone buzz. Nothing is lost by closing it, because no
+  browser ever needs another partner's endpoint: the fan-out is server-side.
+  The insert policy still checks `is_boat_member(boat_id)` on top, so an
+  endpoint cannot be parked against a boat the caller does not belong to —
+  that would subscribe them to that crew's notifications.
 - **Nothing here can fail a save.** `notifyBoat()` never throws; every outcome
   is a `NotifyResult` the sheet prints. Missing VAPID keys and a missing table
   both come back `unavailable` **with the reason** — never a silent success.
