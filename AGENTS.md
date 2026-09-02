@@ -65,6 +65,7 @@ npx supabase gen types typescript --project-id <ref> --schema public
 | `src/lib/google-calendar.ts` | Optional attendance sync to one shared Google calendar |
 | `src/lib/push.ts` | Web Push — the boat's automatic notifications |
 | `src/lib/invoice-one.ts` | Reading an Invoice One document. Pure, and refuses on doubt |
+| `src/lib/invoice-pdf.ts` | Getting the PDF the viewer link does *not* serve |
 | `src/lib/invoice-rules.ts` | Which partner an invoice belongs to, and at which figure |
 | `src/lib/invoice-import.ts` | Gmail → expense, once. The claim-then-create sequence |
 | `src/lib/gmail.ts`, `src/lib/google-oauth.ts` | The connected mailbox, and the OAuth dance |
@@ -380,6 +381,35 @@ Three things about it are load-bearing:
   shape for a sync failure. `google-calendar.test.ts` pins this, along with
   "an edit is a PUT to the same id" and "a cancel is a DELETE of it".
 
+**The invoice is a PDF, and it is not at the link in the email.** The first
+production sync skipped all twelve messages with "לא נמצא שם הלקוח בחשבונית",
+and the parser was right: the "לחץ כאן לצפיה במסמך" URL serves a 1.8KB Angular
+shell — `<m4u-app-root>` and a spinner — with no invoice content in it at all.
+The real chain, read out of the viewer's own bundle and confirmed against a
+live document, is
+
+    email → /viewernew/pages/Y_GreeViewer_document/<DocumentID>
+          → /ViewerNew/api/GreeViewer/Document/GetPDF?DocumentID=…
+          → JSON { Entity: { ArrData: <base64 PDF> } }
+          → a PDF with a real text layer
+
+`src/lib/invoice-pdf.ts` walks it. **Do not go back to reading that page as
+HTML.**
+
+**The PDF is read by position, not as flowing text.** An invoice is a table:
+each label sits on the same visual row as its value, with the value to its
+*left* because Hebrew runs right to left. Flattening the page to lines puts
+every label on one line and every value on another, which is precisely what
+made the summary block unreadable. `groupRows()` buckets items by `y` with
+`ROW_TOLERANCE` — measured, not guessed: a label at y=442.0 has its amount at
+y=440.5 while the next row is at 425.4. `MAX_LABEL_GAP` is the other half of
+that rule: without it, a label whose own cell is empty silently adopts whatever
+else is on its row, and on the addressee row that is a note 481 points away.
+
+Label patterns are anchored with `$` because a label is a whole cell. Without
+the anchor "מע״מ" also matches "סה״כ חייב מע״מ", the VAT lookup lands on the
+net row, and three figures that should agree stop agreeing.
+
 **The Gmail invoice import must refuse more readily than it imports.** These
 documents become expenses with **no approval step**, against money split
 between partners, so the whole design is built around declining:
@@ -401,10 +431,21 @@ between partners, so the whole design is built around declining:
   would have been billed entirely to Nir, at the net figure, silently. A test
   caught it; keep the prefixes.
 
+**Only an imported message is finished with; a skip is retryable.** This is not
+a nicety. A skip is a judgement made with the code as it stood, and the first
+production run skipped twelve messages for a reason that turned out to be a bug
+in *where the document was fetched from*. Treating those as permanently done
+meant fixing the bug would have fixed nothing. So the sync re-reads every
+non-imported row, updates it in place (the unique constraint on
+(boat_id, gmail_message_id) stops a second row as surely as it stops a second
+expense), and only a real expense closes a message for good.
+
 **The import claims before it creates.** `invoice_imports` gets the row first,
-then the expense, then the expense id is written back — and the claim is
-*deleted* if the expense could not be created, so a genuine failure can be
-retried while a success can never be repeated. Reversing that order would
+then the expense, then the expense id is written back — and the claim goes back
+to `skipped` if the expense could not be created, so a genuine failure can be
+retried while a success can never be repeated. A retry claims by *conditional
+update* (`.neq("status", "imported")`) rather than insert: Postgres locks the
+row, so of two syncs racing on the same retry exactly one wins. Reversing that order would
 double-charge the boat whenever the recording failed. Two unique constraints,
 because there are two ways to see the same invoice twice: the Gmail message id,
 and the invoice number for a resend that arrives as a different message.

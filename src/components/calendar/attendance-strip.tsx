@@ -1,27 +1,38 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Plus } from "lucide-react";
 import type { Member } from "@/lib/data";
-import { segmentsLabel, type Attendance } from "@/lib/attendance";
+import {
+  STRIP_DAYS,
+  segmentsLabel,
+  stripDates,
+  type Attendance,
+} from "@/lib/attendance";
 import { cn } from "@/lib/cn";
 import { HEBREW_WEEKDAYS, parseDayKey } from "./date-utils";
 import { SegmentMarks } from "./segment-marks";
 
 /**
- * "Who is coming to the boat, and when?" — the calendar's front door.
+ * "Who is coming to the boat, and when?" — the calendar, entire.
  *
- * A rolling three-week strip rather than a month grid, because the question is
- * always about the next couple of weekends and a grid makes you navigate to
- * ask it. Everything a day says is on the card: the weekday, the date, who is
- * coming and which parts of the day they have taken.
+ * A rolling strip rather than a month grid, because the question is always
+ * about the next couple of weekends and a grid makes you navigate to ask it.
+ * Everything a day says is on the card: the weekday, the date, who is coming
+ * and which parts of the day they have taken.
  *
- * Selection state and the editor itself live in `CalendarTabs`, one level up,
- * so that tapping a day here and tapping the same day in the list below open
- * the *same* sheet in the same state. This component only reports the tap.
+ * It opens on three weeks and grows in three-week blocks from the "+" at the
+ * end. Growing is pure client state — the attendance behind it was fetched out
+ * to the horizon in one go, so revealing a further block costs no round trip
+ * and never shows a day as empty merely because its data had not arrived.
+ *
+ * Selection state and the editor live in `AttendanceScreen`, one level up, so
+ * that tapping a day here and tapping the same day in the list below open the
+ * *same* sheet in the same state. This component only reports the tap.
  *
  * The strip scrolls horizontally under `dir="rtl"`, so it never reads
  * `scrollLeft` — that counts *down* from zero here and browsers have
- * historically disagreed about the sign. Bringing today into view goes through
+ * historically disagreed about the sign. Moving through it goes through
  * `scrollIntoView({ inline: "nearest" })`, which resolves against the writing
  * direction on its own.
  */
@@ -55,24 +66,32 @@ function AttendeeChip({
 export function AttendanceStrip({
   members,
   byDate,
-  dates,
   todayKey,
+  horizonDays,
   onSelectDate,
 }: {
   members: Member[];
   /** Israel calendar date → who is on the boat that day. */
   byDate: Map<string, Attendance[]>;
-  /** Israel calendar days, today first. Built on the server. */
-  dates: string[];
   todayKey: string;
+  /** How far the "+" may reach — the window attendance was fetched over. */
+  horizonDays: number;
   onSelectDate: (dateKey: string) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const [visibleDays, setVisibleDays] = useState(STRIP_DAYS);
+
+  const dates = useMemo(
+    () => stripDates(todayKey, Math.min(visibleDays, horizonDays)),
+    [todayKey, visibleDays, horizonDays],
+  );
 
   const nameOf = useMemo(
     () => new Map(members.map((member) => [member.userId, member])),
     [members],
   );
+
+  const canGrow = dates.length < horizonDays;
 
   // Today leads the strip, but a stray scroll position survives a refresh in
   // some browsers; put it back where it belongs on mount.
@@ -82,6 +101,26 @@ export function AttendanceStrip({
       inline: "nearest",
     });
   }, []);
+
+  /**
+   * Reveal another block, and bring its first day into view — expanding a
+   * carousel and leaving the viewport where it was reads as nothing having
+   * happened. The index is captured before the state change because it is the
+   * first card of the *new* block.
+   */
+  const grow = useCallback(() => {
+    const firstNew = dates.length;
+    setVisibleDays((current) => current + STRIP_DAYS);
+
+    // After paint, so the new cards exist to be scrolled to.
+    requestAnimationFrame(() => {
+      trackRef.current?.children[firstNew]?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
+    });
+  }, [dates.length]);
 
   return (
     <section aria-label="מי מגיע לסירה">
@@ -155,6 +194,19 @@ export function AttendanceStrip({
             </button>
           );
         })}
+
+        {/* Not a link and not a date: it reveals more of this same strip. */}
+        {canGrow && (
+          <button
+            type="button"
+            onClick={grow}
+            aria-label={`הצגת ${STRIP_DAYS} ימים נוספים`}
+            className="flex w-[4.75rem] shrink-0 snap-start flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-[var(--hairline)] bg-hull-850 p-2 text-ink-muted transition active:scale-[0.97] hover:border-teal-400/40 hover:text-teal-400"
+          >
+            <Plus className="size-5" aria-hidden />
+            <span className="text-[10px] leading-tight">עוד ימים</span>
+          </button>
+        )}
       </div>
     </section>
   );

@@ -283,10 +283,22 @@ export function groupByDate(rows: Attendance[]): Map<string, Attendance[]> {
 }
 
 /**
- * The rolling window the strip shows: today plus the next `days - 1`.
- * Two to three weeks is the horizon anyone actually plans a boat over.
+ * How many days the strip reveals at a time — the block it opens on, and the
+ * block each "+" appends. Three weeks is the horizon anyone actually plans a
+ * boat over; beyond that they are reaching, which is what the "+" is for.
  */
 export const STRIP_DAYS = 21;
+
+/**
+ * How far ahead attendance is read, and therefore how far the "+" can go.
+ *
+ * The strip only *renders* `STRIP_DAYS` at a time, but the data behind it is
+ * fetched once out to here — revealing a further block must not need a round
+ * trip, and a day showing "nobody" because its data was never fetched would be
+ * the same lie as an empty expense list. A year of attendance on this boat is
+ * a few dozen rows.
+ */
+export const STRIP_HORIZON_DAYS = 364;
 
 export function stripDates(from: string, days: number = STRIP_DAYS): string[] {
   return Array.from({ length: days }, (_, index) => addDaysToKey(from, index));

@@ -5,10 +5,10 @@ import { getMembers } from "./data";
 import { getInvoiceMessage, gmailSession, listInvoiceMessageIds } from "./gmail";
 import {
   extractViewerUrl,
-  isAllowedInvoiceHost,
-  parseInvoiceDocument,
+  parseInvoiceItems,
   type ParsedInvoice,
 } from "./invoice-one";
+import { fetchInvoiceItems } from "./invoice-pdf";
 import { decideInvoiceExpense } from "./invoice-rules";
 
 /**
@@ -49,8 +49,6 @@ export const BACKFILL_FROM = "2026/05/01";
 /** Imported expenses land here; the boat has no better fitting category. */
 const EXPENSE_CATEGORY = "other";
 
-const DOCUMENT_TIMEOUT_MS = 15_000;
-
 export type ImportOutcome =
   | { messageId: string; status: "imported"; invoiceNumber: string; amountAgorot: number }
   | { messageId: string; status: "skipped"; reason: string }
@@ -65,66 +63,6 @@ export type SyncResult =
       outcomes: ImportOutcome[];
     }
   | { ok: false; error: string };
-
-/* -------------------------------------------------------------------------- */
-/* Fetching the document                                                      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Follow the viewer link and read the page.
- *
- * The host is re-checked here even though `extractViewerUrl` already filtered:
- * this is the call that actually leaves our network, and a redirect can move it
- * somewhere the first check never saw. Redirects are followed manually for that
- * reason.
- *
- * Charset matters. Israeli document pages are still sometimes served as
- * windows-1255, and decoding those as UTF-8 turns every Hebrew label into
- * replacement characters — at which point the parser finds no labels and
- * refuses, which is safe but useless.
- */
-async function fetchInvoiceDocument(url: string): Promise<string | null> {
-  let current = url;
-
-  for (let hop = 0; hop < 5; hop += 1) {
-    if (!isAllowedInvoiceHost(current)) {
-      console.error("[invoice-import] blocked host", current);
-      return null;
-    }
-
-    const response = await fetch(current, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(DOCUMENT_TIMEOUT_MS),
-      cache: "no-store",
-      headers: { "User-Agent": "Boatmate/1.0 (invoice import)" },
-    });
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) return null;
-      current = new URL(location, current).toString();
-      continue;
-    }
-
-    if (!response.ok) {
-      console.error("[invoice-import] document", response.status, current);
-      return null;
-    }
-
-    const contentType = response.headers.get("content-type") ?? "";
-    const charset = /charset=([\w-]+)/i.exec(contentType)?.[1] ?? "utf-8";
-    const buffer = await response.arrayBuffer();
-
-    try {
-      return new TextDecoder(charset).decode(buffer);
-    } catch {
-      return new TextDecoder("utf-8").decode(buffer);
-    }
-  }
-
-  console.error("[invoice-import] too many redirects", url);
-  return null;
-}
 
 /* -------------------------------------------------------------------------- */
 /* One message                                                                */
@@ -150,12 +88,13 @@ async function readInvoice(
     return { ok: false, reason: "לא נמצא קישור למסמך החשבונית במייל" };
   }
 
-  const document = await fetchInvoiceDocument(viewerUrl);
-  if (document === null) {
-    return { ok: false, reason: "לא הצלחנו לפתוח את מסמך החשבונית" };
-  }
+  // Not the viewer page - that is an empty Angular shell. `fetchInvoiceItems`
+  // walks on to the API the shell would have called and reads the PDF it
+  // returns. See lib/invoice-pdf.ts.
+  const document = await fetchInvoiceItems(viewerUrl);
+  if (!document.ok) return { ok: false, reason: document.reason };
 
-  const parsed = parseInvoiceDocument(document);
+  const parsed = parseInvoiceItems(document.items);
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
   return { ok: true, invoice: parsed };
@@ -200,7 +139,7 @@ export async function syncInvoices(boatId: string): Promise<SyncResult> {
   // Everything already dealt with, in one read rather than one per message.
   const { data: seenRows, error: seenError } = await supabase
     .from("invoice_imports")
-    .select("gmail_message_id, invoice_number")
+    .select("id, gmail_message_id, invoice_number, status")
     .eq("boat_id", boatId);
 
   if (seenError) {
@@ -214,9 +153,35 @@ export async function syncInvoices(boatId: string): Promise<SyncResult> {
     };
   }
 
-  const seenMessages = new Set((seenRows ?? []).map((row) => row.gmail_message_id));
+  /*
+   * Only an **imported** message is finished with.
+   *
+   * A skip is a judgement made with the code as it stood, and "no customer
+   * name on this document" turned out to be a fault in how the document was
+   * fetched rather than anything about the invoice. Treating a skip as final
+   * meant fixing that fault fixed nothing: the messages it had already
+   * dismissed would never be looked at again. So skips are retried on every
+   * sync and their row is updated in place, and only a real expense closes a
+   * message for good.
+   */
+  const importedMessages = new Set(
+    (seenRows ?? [])
+      .filter((row) => row.status === "imported")
+      .map((row) => row.gmail_message_id),
+  );
+
+  /** Message id to the existing row, for anything skipped on an earlier run. */
+  const retryable = new Map(
+    (seenRows ?? [])
+      .filter((row) => row.status !== "imported")
+      .map((row) => [row.gmail_message_id, row.id as string]),
+  );
+
+  // Invoice numbers are only claimed by rows that became an expense; a skipped
+  // row's number must not block the retry of its own message.
   const seenNumbers = new Set(
     (seenRows ?? [])
+      .filter((row) => row.status === "imported")
       .map((row) => row.invoice_number)
       .filter((value): value is string => Boolean(value)),
   );
@@ -224,7 +189,7 @@ export async function syncInvoices(boatId: string): Promise<SyncResult> {
   const outcomes: ImportOutcome[] = [];
 
   for (const messageId of messageIds) {
-    if (seenMessages.has(messageId)) {
+    if (importedMessages.has(messageId)) {
       outcomes.push({ messageId, status: "already" });
       continue;
     }
@@ -237,6 +202,7 @@ export async function syncInvoices(boatId: string): Promise<SyncResult> {
       crew,
       everyone,
       seenNumbers,
+      existingRowId: retryable.get(messageId) ?? null,
       userId: user?.id ?? null,
     });
 
@@ -261,19 +227,35 @@ async function importMessage(input: {
   crew: Crew;
   everyone: string[];
   seenNumbers: Set<string>;
+  /** The row from a previous skip, if this message has been seen before. */
+  existingRowId: string | null;
   userId: string | null;
 }): Promise<ImportOutcome> {
-  const { supabase, boatId, messageId } = input;
+  const { supabase, boatId, messageId, existingRowId } = input;
 
-  /** Record a deliberate non-import so the same message is not re-read forever. */
+  /**
+   * Record why this message was not imported.
+   *
+   * Updated in place when the message has been skipped before, because the
+   * unique constraint on (boat_id, gmail_message_id) is what stops a second
+   * expense and would equally stop a second *note*. The row is the latest
+   * attempt, not a log of every one.
+   */
   const skip = async (reason: string): Promise<ImportOutcome> => {
-    await supabase.from("invoice_imports").insert({
-      boat_id: boatId,
-      gmail_message_id: messageId,
-      status: "skipped",
-      reason,
-      imported_by: input.userId,
-    });
+    if (existingRowId) {
+      await supabase
+        .from("invoice_imports")
+        .update({ status: "skipped", reason, imported_at: new Date().toISOString() })
+        .eq("id", existingRowId);
+    } else {
+      await supabase.from("invoice_imports").insert({
+        boat_id: boatId,
+        gmail_message_id: messageId,
+        status: "skipped",
+        reason,
+        imported_by: input.userId,
+      });
+    }
     return { messageId, status: "skipped", reason };
   };
 
@@ -300,31 +282,63 @@ async function importMessage(input: {
   const decision = decideInvoiceExpense(invoice, input.crew);
   if (!decision.ok) return skip(decision.reason);
 
-  // Claim first. If two syncs race, the unique constraint decides.
-  const { data: claim, error: claimError } = await supabase
-    .from("invoice_imports")
-    .insert({
-      boat_id: boatId,
-      gmail_message_id: messageId,
-      invoice_number: invoice.invoiceNumber,
-      status: "imported",
-      customer_name: invoice.customerName,
-      net_agorot: invoice.netAgorot,
-      total_agorot: invoice.totalAgorot,
-      invoice_date: invoice.invoiceDate,
-      imported_by: input.userId,
-    })
-    .select("id")
-    .single();
+  /*
+   * Claim first, then create the expense. Reversing that would double-charge
+   * the boat whenever the recording failed, and claiming is what makes two
+   * concurrent syncs safe.
+   *
+   * Two shapes, because a retried message already has a row: a fresh message
+   * is an insert the unique constraint arbitrates, and a previously skipped
+   * one is a conditional update that only succeeds while the row still says
+   * skipped. Postgres locks the row for that update, so of two syncs racing on
+   * the same retry exactly one changes it and the other matches nothing - the
+   * same guarantee the constraint gives, by a different route.
+   */
+  const claimFields = {
+    invoice_number: invoice.invoiceNumber,
+    status: "imported" as const,
+    reason: null,
+    customer_name: invoice.customerName,
+    net_agorot: invoice.netAgorot,
+    total_agorot: invoice.totalAgorot,
+    invoice_date: invoice.invoiceDate,
+    imported_at: new Date().toISOString(),
+    imported_by: input.userId,
+  };
 
-  if (claimError) {
-    // 23505 is a unique violation: somebody else got there first, which is the
-    // duplicate protection working rather than a failure.
-    if (claimError.code === "23505") {
-      return { messageId, status: "already" };
+  let claimId: string;
+
+  if (existingRowId) {
+    const { data: claimed, error } = await supabase
+      .from("invoice_imports")
+      .update(claimFields)
+      .eq("id", existingRowId)
+      .neq("status", "imported")
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      console.error("[invoice-import] reclaim", messageId, error);
+      return { messageId, status: "skipped", reason: "רישום הייבוא נכשל" };
     }
-    console.error("[invoice-import] claim", messageId, claimError);
-    return { messageId, status: "skipped", reason: "רישום הייבוא נכשל" };
+    // Nothing matched: another sync imported it between our read and now.
+    if (!claimed) return { messageId, status: "already" };
+    claimId = claimed.id;
+  } else {
+    const { data: claimed, error } = await supabase
+      .from("invoice_imports")
+      .insert({ boat_id: boatId, gmail_message_id: messageId, ...claimFields })
+      .select("id")
+      .single();
+
+    if (error) {
+      // 23505 is a unique violation: somebody else got there first, which is
+      // the duplicate protection working rather than a failure.
+      if (error.code === "23505") return { messageId, status: "already" };
+      console.error("[invoice-import] claim", messageId, error);
+      return { messageId, status: "skipped", reason: "רישום הייבוא נכשל" };
+    }
+    claimId = claimed.id;
   }
 
   const shares = splitEqual(decision.amountAgorot, input.everyone);
@@ -350,17 +364,25 @@ async function importMessage(input: {
   );
 
   if (expenseError) {
-    // Release the claim so a later sync can try again — an import that failed
-    // to become an expense must not be remembered as done.
+    // Release the claim so a later sync tries again. Put back as skipped
+    // rather than deleted, because skipped is retryable now and the row keeps
+    // the reason instead of the failure vanishing.
     console.error("[invoice-import] create_expense", messageId, expenseError);
-    await supabase.from("invoice_imports").delete().eq("id", claim.id);
+    await supabase
+      .from("invoice_imports")
+      .update({
+        status: "skipped",
+        reason: "יצירת ההוצאה נכשלה",
+        invoice_number: null,
+      })
+      .eq("id", claimId);
     return { messageId, status: "skipped", reason: "יצירת ההוצאה נכשלה" };
   }
 
   await supabase
     .from("invoice_imports")
     .update({ expense_id: expenseId as unknown as string })
-    .eq("id", claim.id);
+    .eq("id", claimId);
 
   return {
     messageId,

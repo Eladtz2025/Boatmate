@@ -395,51 +395,14 @@ export const getDocuments = cache(async (boatId: string): Promise<DocumentRow[]>
   }));
 });
 
-export type CalendarItem = {
-  id: string;
-  kind: string;
-  title: string;
-  startsAt: string;
-  endsAt: string | null;
-  allDay: boolean;
-  location: string | null;
-  amountAgorot: number | null;
-};
-
-/**
- * The unified feed: real events plus derived document expiries and pending
- * payment dates, straight from the v_calendar_items view.
+/*
+ * `CalendarItem`, `getCalendarItems` and `getNextEvent` used to live here, all
+ * three feeding the month / week / day / timeline calendar off the
+ * `v_calendar_items` view. That screen is gone — the calendar is attendance now
+ * — and so are they. The view itself is untouched in the database: it is a
+ * projection, it costs nothing standing idle, and dropping it would be a
+ * migration for no gain.
  */
-export const getCalendarItems = cache(
-  async (boatId: string, fromISO?: string, toISO?: string): Promise<CalendarItem[]> => {
-    const supabase = await createClient();
-    let query = supabase
-      .from("v_calendar_items")
-      .select("id, kind, title, starts_at, ends_at, all_day, location, amount_agorot")
-      .eq("boat_id", boatId);
-
-    if (fromISO) query = query.gte("starts_at", fromISO);
-    if (toISO) query = query.lte("starts_at", toISO);
-
-    const data = rows(await query.order("starts_at"), "את לוח הזמנים");
-
-    return data.map((row) => ({
-      id: row.id as string,
-      kind: row.kind as string,
-      title: row.title as string,
-      startsAt: row.starts_at as string,
-      endsAt: row.ends_at as string | null,
-      allDay: row.all_day as boolean,
-      location: row.location as string | null,
-      amountAgorot: row.amount_agorot as number | null,
-    }));
-  },
-);
-
-export const getNextEvent = cache(async (boatId: string): Promise<CalendarItem | null> => {
-  const items = await getCalendarItems(boatId, new Date().toISOString());
-  return items.find((item) => item.kind === "usage") ?? items[0] ?? null;
-});
 
 /* -------------------------------------------------------------------------- */
 /* Attendance — "who is coming to the boat, and when?"                        */
