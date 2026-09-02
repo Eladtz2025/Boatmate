@@ -89,6 +89,13 @@ export type DayView = {
   periods: PeriodView[];
   /** The window to open on — the one the clock is in, for today. */
   initialPeriod: number;
+  /**
+   * The window the clock is actually standing in, or null when it is outside
+   * all three (or this is not today). The live reading is shown only while
+   * this window is the one selected, so an instant's numbers never sit beside
+   * a summary of a different four hours.
+   */
+  nowPeriod: number | null;
 };
 
 /** One of the four readings. Small on purpose; the card is half its old size. */
@@ -165,7 +172,7 @@ export function ConditionsPanel({
     <div className="card flex flex-col gap-2 p-3.5">
       <div className="flex items-baseline justify-between gap-2">
         <TileLabel>{heading}</TileLabel>
-        {now && (
+        {now && periodIndex === day.nowPeriod && (
           <span className="numeric shrink-0 text-[10px] text-ink-subtle">{now}</span>
         )}
       </div>

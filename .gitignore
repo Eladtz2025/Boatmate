@@ -50,3 +50,4 @@ next-env.d.ts
 # final matching pattern, so `!.env.example` has to follow `.env*` to survive.
 .env*
 !.env.example
+.vapid-keys.local.txt

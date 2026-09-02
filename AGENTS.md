@@ -63,6 +63,7 @@ npx supabase gen types typescript --project-id <ref> --schema public
 | `src/lib/attendance.ts` | "Who is coming to the boat, and when" — pure, unit-tested |
 | `src/lib/tz.ts` | Israel wall-clock ↔ instant. Everything date-keyed goes through it |
 | `src/lib/google-calendar.ts` | Optional attendance sync to one shared Google calendar |
+| `src/lib/push.ts` | Web Push — the boat's automatic notifications |
 | `supabase/migrations/` | Schema, RLS policies, storage buckets |
 | `supabase/scripts/` | One-off operational SQL. Run by hand, never by `db push` |
 
@@ -238,6 +239,18 @@ hours of each is a half-cloudy day that neither code alone would claim.
 07:00–09:00" under a day billed clear, so the fog is dropped as a *headline*
 without being dropped as a *fact*.
 
+**One judgement per day, drawn from the windows.** `dayTone()` colours a day's
+tab from `periodVerdict()` over that day's own windows — best window wins,
+because the question is "is there a stretch of this day I could go out in".
+There used to be a separate `dailyVerdict()` reading day-level aggregates (the
+daily gust maximum, the daily *longest* wave period) while the panel underneath
+read hours, and two verdicts from different inputs drift: a calm dot could sit
+above three windows all reading "ים קצוץ". Do not reintroduce a parallel
+day-level judgement. For the same reason the live "עכשיו" reading is shown
+only while the window the clock is standing in is the selected one — an
+instant's numbers beside a summary of different hours reads as a contradiction
+even when both are true.
+
 **A day is three windows, and each is read from its own hours.** 08–12, 12–16,
 16–20 (`DAY_PERIODS`), summarised by `summarisePeriod()` from the provider's
 hourly series and judged by `periodVerdict()`. This is the wind-range rule
@@ -281,17 +294,36 @@ on the track, which is direction-agnostic. Native scroll-snap is also what keeps
 a swipe feeling native and leaves pinch-to-zoom working in the photo viewer; a
 hand-rolled drag handler takes both away.
 
-**There is no notification infrastructure, and nothing pretends there is.** No
-push, no VAPID keys, no subscription table, no mail sender — sign-in
-deliberately sends no email at all, which is what keeps it clear of Supabase's
-project-wide SMTP limit. What exists is `src/lib/whatsapp.ts` and the share
-sheet, which is where these three people actually coordinate. Marking
-attendance therefore ends on a "עדכון השותפים" button that hands
-`attendanceMessage()` to `share()`; it is one deliberate tap because
-`navigator.share` needs transient activation and would be refused if fired
-after the server round trip. **Do not** wire a fake "sent" state to anything
-here. If real push is ever wanted it needs a subscriptions table, which needs
-migrations to be applicable again.
+**Notifications are Web Push, and the share sheet is not the notification.**
+`src/lib/push.ts` sends; `public/sw.js` receives; `push_subscriptions` holds
+one row per browser that agreed. Web Push rather than email or a vendor because
+it needs no account and no SMTP — sign-in deliberately sends no mail at all,
+which is what keeps it clear of Supabase's project-wide limit — just a VAPID
+key pair we generate ourselves and the service worker that already shipped.
+
+Three things here are load-bearing:
+
+- **The send goes through the service role.** A partner marking attendance has
+  to reach the *other* partners' endpoints. The RLS policy on that table is
+  deliberately tighter than every other boat-scoped table: read is crew-wide,
+  but **write is your own rows only**. Any partner writing any row is right for
+  shared money; it is not right for a delivery address, where inserting
+  somebody else's endpoint is the power to make their phone buzz.
+- **Nothing here can fail a save.** `notifyBoat()` never throws; every outcome
+  is a `NotifyResult` the sheet prints. Missing VAPID keys and a missing table
+  both come back `unavailable` **with the reason** — never a silent success.
+  The one thing this code must never do is imply a notification that did not
+  go out.
+- **The payload is thin on purpose** — who, when, day or night. It is rendered
+  by the operating system onto a lock screen, which is the one surface in this
+  app that is not behind the auth gate. No money, no balances, no document
+  titles.
+
+The WhatsApp share (`src/lib/whatsapp.ts`) survives as a *secondary* action on
+the saved panel, for putting it in the group chat as well. It is one deliberate
+tap because `navigator.share` needs transient activation and would be refused
+if fired after the server round trip. It is not the notification channel, and
+it should not be presented as one.
 
 **Google Calendar sync is optional, credential-gated, and reports itself.**
 `src/lib/google-calendar.ts`. One shared boat calendar reached with a *service
@@ -312,6 +344,11 @@ Three things about it are load-bearing:
   as many words. Silence in either case would be the app claiming a calendar
   entry exists.
 - **Both calls carry `AbortSignal.timeout`**, as the Open-Meteo calls now do.
+- **An update always states `status: "confirmed"`.** Google keeps a cancelled
+  event's id for a while, and a PUT that does not say so leaves it cancelled —
+  a 200 response over an event nobody can see, which is the worst possible
+  shape for a sync failure. `google-calendar.test.ts` pins this, along with
+  "an edit is a PUT to the same id" and "a cancel is a DELETE of it".
 
 **Storage is private.** Buckets `receipts`, `documents`, `media`. Object paths
 are always `{boat_id}/...` — the first path segment is what the storage policies

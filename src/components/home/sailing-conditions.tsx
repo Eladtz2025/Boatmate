@@ -4,9 +4,9 @@ import {
   DAY_PERIODS,
   GUSTY_NOW_KN,
   TEL_AVIV,
-  dailyVerdict,
   dayDate,
   dayLabel,
+  dayTone,
   describeWeather,
   periodVerdict,
   seaStateLabel,
@@ -80,17 +80,32 @@ function toPeriodView(
 }
 
 /**
+ * Which window the clock is standing in, or null when it is outside all three
+ * — before 08:00 or after 20:00, when "now" belongs to no sailing window at
+ * all. Only today can have one.
+ */
+function currentPeriod(isToday: boolean, hour: number): number | null {
+  if (!isToday) return null;
+  const index = DAY_PERIODS.findIndex(
+    (period) => hour >= period.fromHour && hour < period.toHour,
+  );
+  return index === -1 ? null : index;
+}
+
+/**
  * The window to open a day on.
  *
  * Today opens on the window the clock is in, because "can I go out" is a
  * question about the next few hours; every other day opens on the morning,
- * which is where a plan starts. Past 20:00 there is no window left today, so
- * it falls back to the last one rather than pretending the morning is ahead.
+ * which is where a plan starts. Before 08:00 the morning is still ahead;
+ * after 20:00 nothing is, so it rests on the last window rather than
+ * pretending the morning has not gone.
  */
 function initialPeriod(isToday: boolean, hour: number): number {
   if (!isToday) return 0;
-  const index = DAY_PERIODS.findIndex((period) => hour < period.toHour);
-  return index === -1 ? DAY_PERIODS.length - 1 : index;
+  const now = currentPeriod(isToday, hour);
+  if (now !== null) return now;
+  return hour < DAY_PERIODS[0].fromHour ? 0 : DAY_PERIODS.length - 1;
 }
 
 function toDayView(day: DailyForecast, isToday: boolean, hour: number): DayView {
@@ -98,11 +113,14 @@ function toDayView(day: DailyForecast, isToday: boolean, hour: number): DayView 
     date: day.date,
     label: dayLabel(day.date),
     sub: dayDate(day.date),
-    tone: dailyVerdict(day).tone,
+    // From the day's own windows, so the dot and the panel it opens cannot
+    // tell different stories about the same day.
+    tone: dayTone(day.periods),
     periods: day.periods.map((period, index) =>
       toPeriodView(DAY_PERIODS[index], period),
     ),
     initialPeriod: initialPeriod(isToday, hour),
+    nowPeriod: currentPeriod(isToday, hour),
   };
 }
 
@@ -151,9 +169,11 @@ export async function SailingConditions() {
     .slice(0, PANELS)
     .map((day, index) => toDayView(day, index === 0, hour));
 
-  // The live line is a fact about this minute, kept deliberately separate from
-  // the window summaries: "right now" and "this afternoon" are different
-  // questions and are allowed to disagree.
+  // The live reading, shown only while the window it belongs to is the one on
+  // screen — `nowPeriod` on today's view. Floating it above whichever window
+  // happened to be selected put an instant's numbers next to a four-hour
+  // summary of a different part of a different day, which reads as the card
+  // contradicting itself even though both figures are true.
   const gusty = weather.windGustKn >= GUSTY_NOW_KN;
   const now =
     `עכשיו ${weather.temperature}° · ${weather.windSpeedKn} קשר` +

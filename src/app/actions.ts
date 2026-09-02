@@ -15,6 +15,8 @@ import {
   upsertGoogleEvent,
   type SyncResult,
 } from "@/lib/google-calendar";
+import { notifyBoat, type NotifyResult } from "@/lib/push";
+import { formatLongDate } from "@/lib/format";
 import { topUpOccurrences } from "@/lib/recurring";
 import { BUCKETS } from "@/lib/constants";
 
@@ -482,20 +484,161 @@ export async function deleteEvent(id: string): Promise<ActionResult> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Push notifications                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Registers this browser to receive the boat's notifications.
+ *
+ * Upserted on `endpoint`, which is unique: a browser that re-subscribes — after
+ * a permission reset, or a key rotation — must replace its row rather than add
+ * one, or that device gets notified twice about everything.
+ *
+ * The failure worth naming separately is the missing table: until
+ * `supabase/migrations/20260902120000_push_subscriptions.sql` has been applied
+ * this returns a message saying exactly that, instead of a raw Postgres error
+ * that reads like a bug.
+ */
+export async function savePushSubscription(input: {
+  boatId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent?: string | null;
+}): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return fail("צריך להתחבר מחדש");
+
+  const { error } = await supabase.from("push_subscriptions").upsert(
+    {
+      boat_id: input.boatId,
+      user_id: user.id,
+      endpoint: input.endpoint,
+      p256dh: input.p256dh,
+      auth: input.auth,
+      user_agent: input.userAgent ?? null,
+      expired_at: null,
+    },
+    { onConflict: "endpoint" },
+  );
+
+  if (error) {
+    // PostgREST answers PGRST205 from its schema cache; 42P01 is Postgres's
+    // own code. Both mean the migration has not been applied — see push.ts.
+    if (error.code === "42P01" || error.code === "PGRST205") {
+      return fail(
+        "טבלת ההתראות עדיין לא נוצרה במסד הנתונים — צריך להריץ את המיגרציה.",
+      );
+    }
+    return fail(error.message);
+  }
+
+  refresh("/settings");
+  return ok();
+}
+
+/** Unsubscribes this browser. The row goes; other devices keep working. */
+export async function removePushSubscription(endpoint: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("push_subscriptions")
+    .delete()
+    .eq("endpoint", endpoint);
+
+  if (error && error.code !== "42P01" && error.code !== "PGRST205") {
+    return fail(error.message);
+  }
+
+  refresh("/settings");
+  return ok();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Attendance                                                                 */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The result of marking attendance. `ok` says whether the boat's own record
- * changed — the only thing a partner is really asking about — and `sync`
- * reports Google separately, so a calendar that is down can be *said* rather
- * than either hidden or mistaken for a failed save.
+ * The result of marking attendance.
+ *
+ * `ok` says whether the boat's own record changed — the only thing a partner
+ * is really asking about. `notify` and `sync` report the two things that hang
+ * off it, each separately, so a push service or a calendar being down can be
+ * *said* rather than either hidden or mistaken for a failed save.
  */
 export type AttendanceResult =
-  | { ok: true; sync: SyncResult; eventId: string }
+  | { ok: true; notify: NotifyResult; sync: SyncResult; eventId: string }
   | { ok: false; error: string };
 
 const failAttendance = (error: string): AttendanceResult => ({ ok: false, error });
+
+/**
+ * Tell the other partners. The message is deliberately thin — who, when, and
+ * day or night — because it is rendered by the operating system and lands on a
+ * lock screen, the one surface in this app that is not behind the auth gate.
+ *
+ * `tag` collapses repeats per partner per day: changing Saturday from "ליום"
+ * to "לינה" replaces the earlier notification instead of stacking a second.
+ */
+function attendanceNotice(input: {
+  boatId: string;
+  actorId: string | null;
+  boatName: string;
+  partnerName: string;
+  dateKey: string;
+  stay: Stay | null;
+  cancelled: boolean;
+}): Promise<NotifyResult> {
+  const when = formatLongDate(input.dateKey);
+
+  return notifyBoat({
+    boatId: input.boatId,
+    exceptUserId: input.actorId,
+    message: {
+      title: input.boatName,
+      body: input.cancelled
+        ? `${input.partnerName} ביטל/ה הגעה — ${when}`
+        : `${input.partnerName} מגיע/ה לסירה — ${when}, ${STAY_LABEL[input.stay ?? "day"]}`,
+      url: "/calendar",
+      tag: `attendance:${input.actorId ?? "unknown"}:${input.dateKey}`,
+    },
+  });
+}
+
+/**
+ * Who this is and which boat, read from the database rather than taken from
+ * the caller.
+ *
+ * Both strings end up on other people's lock screens, and the partner name is
+ * also what gets written into the event title and the Google summary. Trusting
+ * the browser for either would mean any partner could choose what the others
+ * are told they are looking at; the crew are equals here, not each other's
+ * copywriters.
+ */
+async function identify(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  boatId: string,
+  userId: string,
+): Promise<{ partnerName: string; boatName: string }> {
+  const [member, boat] = await Promise.all([
+    supabase
+      .from("boat_members")
+      .select("display_name, profiles(full_name)")
+      .eq("boat_id", boatId)
+      .eq("user_id", userId)
+      .maybeSingle(),
+    supabase.from("boats").select("name").eq("id", boatId).maybeSingle(),
+  ]);
+
+  const profile = member.data?.profiles as { full_name: string | null } | null;
+
+  return {
+    partnerName: member.data?.display_name || profile?.full_name || "שותף",
+    boatName: boat.data?.name || "Boatmate",
+  };
+}
 
 /**
  * Set — or change — who is on the boat on a given day.
@@ -506,9 +649,10 @@ const failAttendance = (error: string): AttendanceResult => ({ ok: false, error 
  * a past double-tap did leave are cleaned up here rather than being rendered
  * as two people.
  *
- * Google is synced *after* the row is safely written, and its failure is
- * returned, never thrown — attendance saving is not allowed to depend on a
- * third party being up.
+ * Notifying the crew and syncing Google both happen *after* the row is safely
+ * written, and both hand their failures back as values rather than throwing —
+ * attendance saving is not allowed to depend on a push service or a calendar
+ * being up.
  */
 export async function setAttendance(input: {
   boatId: string;
@@ -516,8 +660,6 @@ export async function setAttendance(input: {
   stay: Stay;
   /** Whose attendance. Defaults to the caller. */
   userId?: string;
-  /** Shown as the event title and as the Google event summary. */
-  partnerName: string;
 }): Promise<AttendanceResult> {
   const supabase = await createClient();
   const {
@@ -527,6 +669,7 @@ export async function setAttendance(input: {
   const userId = input.userId ?? user?.id;
   if (!userId) return failAttendance("צריך להתחבר מחדש");
 
+  const { partnerName, boatName } = await identify(supabase, input.boatId, userId);
   const { startsAt, endsAt } = attendanceWindow(input.dateKey, input.stay);
   const { from, to } = dayRange(input.dateKey);
 
@@ -545,7 +688,7 @@ export async function setAttendance(input: {
   const row = {
     boat_id: input.boatId,
     kind: "arrival",
-    title: input.partnerName,
+    title: partnerName,
     starts_at: startsAt,
     ends_at: endsAt,
     all_day: false,
@@ -579,16 +722,29 @@ export async function setAttendance(input: {
     eventId = created.id;
   }
 
-  const sync = await upsertGoogleEvent({
-    eventId,
-    summary: `${input.partnerName} — ${STAY_LABEL[input.stay]}`,
-    description: "נקבע ב-Boatmate",
-    startsAt,
-    endsAt,
-  });
+  // Both legs are independent of each other and of the save that already
+  // happened, so they run together rather than making the partner wait twice.
+  const [notify, sync] = await Promise.all([
+    attendanceNotice({
+      boatId: input.boatId,
+      actorId: userId,
+      boatName,
+      partnerName,
+      dateKey: input.dateKey,
+      stay: input.stay,
+      cancelled: false,
+    }),
+    upsertGoogleEvent({
+      eventId,
+      summary: `${partnerName} — ${STAY_LABEL[input.stay]}`,
+      description: "נקבע ב-Boatmate",
+      startsAt,
+      endsAt,
+    }),
+  ]);
 
   refresh("/", "/calendar");
-  return { ok: true, sync, eventId };
+  return { ok: true, notify, sync, eventId };
 }
 
 /** Cancel attendance. Removes the calendar entry too; already gone is fine. */
@@ -620,22 +776,39 @@ export async function clearAttendance(input: {
 
   const ids = (existing ?? []).map((item) => item.id);
   if (ids.length === 0) {
+    // Nothing was cancelled, so there is nothing to tell anyone about.
     refresh("/", "/calendar");
-    return { ok: true, sync: { status: "ok" }, eventId: "" };
+    return {
+      ok: true,
+      notify: { status: "none", sent: 0 },
+      sync: { status: "ok" },
+      eventId: "",
+    };
   }
 
   const { error } = await supabase.from("events").delete().in("id", ids);
   if (error) return failAttendance(error.message);
 
-  // Every id is removed, but only the first failure is worth reporting.
-  let sync: SyncResult = { status: "ok" };
-  for (const id of ids) {
-    const result = await deleteGoogleEvent(id);
-    if (result.status !== "ok" && sync.status === "ok") sync = result;
-  }
+  const { partnerName, boatName } = await identify(supabase, input.boatId, userId);
+
+  // Every id is removed from Google, but only the first failure is worth
+  // reporting — the partner needs to know the calendar is behind, not which
+  // of two duplicate rows it was behind on.
+  const removals = await Promise.all(ids.map((id) => deleteGoogleEvent(id)));
+  const sync = removals.find((result) => result.status !== "ok") ?? { status: "ok" as const };
+
+  const notify = await attendanceNotice({
+    boatId: input.boatId,
+    actorId: userId,
+    boatName,
+    partnerName,
+    dateKey: input.dateKey,
+    stay: null,
+    cancelled: true,
+  });
 
   refresh("/", "/calendar");
-  return { ok: true, sync, eventId: ids[0] };
+  return { ok: true, notify, sync, eventId: ids[0] };
 }
 
 /* -------------------------------------------------------------------------- */

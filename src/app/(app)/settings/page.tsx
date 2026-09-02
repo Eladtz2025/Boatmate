@@ -6,6 +6,7 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { BoatSettingsForm } from "@/components/settings/boat-settings-form";
 import { CrewManager } from "@/components/settings/crew-manager";
+import { NotificationsCard } from "@/components/settings/notifications-card";
 import { getBoat, getCurrentUser, getMembers } from "@/lib/data";
 import { isGoogleCalendarConfigured } from "@/lib/google-calendar";
 
@@ -45,6 +46,17 @@ export default async function SettingsPage() {
             boatId={boat.id}
             members={members}
             currentUserId={user?.id ?? ""}
+          />
+        </Card>
+
+        {/* Notifications. The public key is a NEXT_PUBLIC_ value on purpose -
+            the browser needs it to subscribe; the private half never leaves
+            the server. Empty means the feature is off, and it says so. */}
+        <Card>
+          <CardTitle>התראות</CardTitle>
+          <NotificationsCard
+            boatId={boat.id}
+            vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? ""}
           />
         </Card>
 

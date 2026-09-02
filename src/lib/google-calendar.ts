@@ -194,6 +194,10 @@ export async function upsertGoogleEvent(event: GoogleEvent): Promise<SyncResult>
     description: event.description,
     start: { dateTime: event.startsAt, timeZone: "Asia/Jerusalem" },
     end: { dateTime: event.endsAt, timeZone: "Asia/Jerusalem" },
+    // Explicit, and load-bearing. A cancelled event keeps its id in Google for
+    // a while; an update that does not say "confirmed" leaves it cancelled,
+    // which looks exactly like a successful sync to an event nobody can see.
+    status: "confirmed",
     source: { title: "Boatmate", url: process.env.NEXT_PUBLIC_SITE_URL ?? "" },
   });
 

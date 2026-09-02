@@ -4,13 +4,14 @@ import {
   GUSTY_NOW_KN,
   calmWindow,
   conditionSpell,
-  dailyVerdict,
   dayCondition,
+  dayTone,
   formatWindow,
   isGusty,
+  periodVerdict,
   sailingVerdict,
   severeCondition,
-  type DailyForecast,
+  summarisePeriod,
   type HourReading,
 } from "./weather";
 
@@ -70,28 +71,6 @@ const SEA_BREEZE = hours({
   19: 11,
   20: 4,
 });
-
-function day(overrides: Partial<DailyForecast> = {}): DailyForecast {
-  return {
-    date: "2026-07-29",
-    weatherCode: 2,
-    severeCode: 2,
-    tempMax: 31,
-    tempMin: 24,
-    windMinKn: 1,
-    windMaxKn: 8,
-    gustMinKn: 4,
-    gustMaxKn: 22,
-    windDirection: 270,
-    waveHeight: 0.6,
-    wavePeriod: 6,
-    sunrise: null,
-    sunset: null,
-    hours: SEA_BREEZE,
-    periods: [],
-    ...overrides,
-  };
-}
 
 describe("calmWindow", () => {
   it("ends the window at the first gusty hour", () => {
@@ -267,49 +246,61 @@ describe("sailingVerdict", () => {
   });
 });
 
-describe("dailyVerdict", () => {
-  it("calls a day with a long calm morning good", () => {
-    // The point of the whole exercise: a blowy afternoon does not condemn the
-    // day, because the morning is six hours of glass.
-    expect(dailyVerdict(day())).toEqual({
-      label: "יש חלון טוב להפלגה",
-      tone: "good",
-    });
-  });
-
-  it("warns when the window is too short to be worth it", () => {
-    expect(dailyVerdict(day({ hours: hours({ 6: 4, 7: 4, 8: 20, 9: 22 }) })).tone).toBe(
-      "caution",
+/**
+ * `dayTone` replaced `dailyVerdict`, and the reason is the thing under test:
+ * the day's colour and the window panel it opens must be the same judgement,
+ * because they used to be two — a calm dot over three windows all reading
+ * "ים קצוץ" — drawn from day-level aggregates on one side and hourly readings
+ * on the other.
+ */
+describe("dayTone", () => {
+  const window = (gusts: number[], extra: Partial<HourReading> = {}) =>
+    summarisePeriod(
+      "morning",
+      gusts.map((gust, index) => ({
+        hour: 8 + index,
+        windGustKn: gust,
+        windSpeedKn: Math.max(5, Math.round(gust / 3)),
+        weatherCode: 0,
+        ...extra,
+      })),
     );
+
+  const CALM = window([7, 8, 9, 10]);
+  const BLOWY = window([20, 22, 24, 25]);
+  const STORMY = window([20, 22, 24, 25], { weatherCode: 95 });
+
+  it("calls a day with one good window good", () => {
+    // The point of the whole exercise: a blowy afternoon does not condemn a
+    // day whose morning is four hours of glass.
+    expect(dayTone([CALM, BLOWY, BLOWY])).toBe("good");
   });
 
-  it("warns when the day never settles", () => {
-    expect(dailyVerdict(day({ hours: hours({ 6: 20, 7: 22, 8: 25 }) }))).toEqual({
-      label: "משבים לאורך כל היום",
-      tone: "caution",
-    });
+  it("warns when no window is clean but none is closed", () => {
+    expect(dayTone([BLOWY, BLOWY, BLOWY])).toBe("caution");
   });
 
-  it("lets a storm override an otherwise calm day", () => {
-    expect(dailyVerdict(day({ severeCode: 95 })).tone).toBe("poor");
+  it("condemns a day only when every window does", () => {
+    expect(dayTone([STORMY, STORMY, STORMY])).toBe("poor");
+    // One survivable window is enough to stop the day being written off.
+    expect(dayTone([CALM, STORMY, STORMY])).toBe("good");
   });
 
-  it("reads the storm off the worst hour, not off the headline", () => {
-    // The whole point of splitting the two. Three hours of thunderstorm in a
-    // fourteen-hour day do not get to be the day's *label* — but they very much
-    // get to stop you going out, so softening one must not soften the other.
-    expect(
-      dailyVerdict(day({ weatherCode: 0, severeCode: 95 })).tone,
-    ).toBe("poor");
+  it("ignores windows the provider had no hours for", () => {
+    const unknown = summarisePeriod("evening", []);
+    expect(dayTone([CALM, BLOWY, unknown])).toBe("good");
   });
 
-  it("lets a heavy sea override a calm window", () => {
-    expect(dailyVerdict(day({ waveHeight: 2.4 })).tone).toBe("poor");
+  it("does not read a day with no data at all as calm", () => {
+    const unknown = summarisePeriod("morning", []);
+    expect(dayTone([unknown, unknown, unknown])).toBe("caution");
   });
 
-  it("flags a short, slamming chop even when the wind is fine", () => {
-    expect(dailyVerdict(day({ waveHeight: 0.8, wavePeriod: 4 })).tone).toBe(
-      "caution",
-    );
+  it("agrees with the window the panel would show", () => {
+    // The invariant that closes the old contradiction: whatever colour the day
+    // carries, some window on that day carries a verdict of the same tone.
+    const periods = [CALM, BLOWY, STORMY];
+    const tone = dayTone(periods);
+    expect(periods.map((period) => periodVerdict(period).tone)).toContain(tone);
   });
 });

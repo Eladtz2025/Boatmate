@@ -78,7 +78,7 @@ export type DailyForecast = {
   weatherCode: number;
   /**
    * The worst daylight hour, kept separately so softening the headline cannot
-   * soften a warning: `dailyVerdict` still reads this for the storm override.
+   * soften a warning: a warning is drawn from this, never from the headline.
    * Also what lets a panel name a real spell the headline does not cover.
    */
   severeCode: number;
@@ -199,7 +199,7 @@ export function summarisePeriod(
 /**
  * Can we go out in *this window*?
  *
- * Unlike `dailyVerdict`, which asks whether a day has a window in it, this one
+ * Unlike `dayTone`, which asks whether a day has a window in it at all, this
  * is already looking at a window — so gusts are counted hour by hour and the
  * answer distinguishes "calm throughout" from "builds while you are out",
  * which is the difference that matters once you have committed to four hours.
@@ -234,6 +234,32 @@ export function periodVerdict(period: PeriodForecast): Verdict {
   }
 
   return { label: "תנאים טובים להפלגה", tone: "good" };
+}
+
+/**
+ * The colour a whole day gets at a glance, answering "is there a window on
+ * this day I could go out in?"
+ *
+ * Derived from the day's own windows, and that is the whole point. It replaces
+ * a separate `dailyVerdict()` that judged a day from day-level aggregates —
+ * the daily gust maximum, the daily *longest* wave period — while the panel
+ * underneath judged each window from its hours. Two verdicts drawn from
+ * different data disagree sooner or later, and these did: a day could show a
+ * calm dot above three windows every one of which read "ים קצוץ". One source
+ * now, so the dot cannot contradict the panel it opens.
+ *
+ * Best window wins, because that is the question being asked. A day with a
+ * glassy morning and an unusable afternoon is still a day you can sail.
+ */
+export function dayTone(periods: PeriodForecast[]): Verdict["tone"] {
+  const known = periods.filter((period) => period.hours.length > 0);
+  // No hours at all is not a calm day, it is an unknown one.
+  if (known.length === 0) return "caution";
+
+  const tones = known.map((period) => periodVerdict(period).tone);
+  if (tones.includes("good")) return "good";
+  if (tones.includes("caution")) return "caution";
+  return "poor";
 }
 
 /**
@@ -543,7 +569,8 @@ export type VerdictInput = Pick<
  * glance at temperature and wave height alone will miss.
  *
  * This judges a **moment** — it is what the live reading on today's panel uses.
- * A whole day is judged by `dailyVerdict`, which asks a different question.
+ * A whole day is coloured by `dayTone`, which asks a different question of
+ * the day's three windows.
  */
 export function sailingVerdict(weather: VerdictInput): Verdict {
   const { windSpeedKn, windGustKn, waveHeight, wavePeriod, weatherCode } = weather;
@@ -564,32 +591,14 @@ export function sailingVerdict(weather: VerdictInput): Verdict {
   return { label: "תנאים טובים להפלגה", tone: "good" };
 }
 
-/**
- * A whole day, judged by the question you actually ask of a forecast: *is
- * there a stretch of this day I could go out in?*
- *
- * Not by the day's worst hour, which on a sea-breeze coast is always the
- * afternoon and would condemn every day alike. A morning of glass followed by
- * a blowy afternoon is a good day with a window in it, and that is what this
- * says. Only conditions that rule out the whole day — storms, a heavy sea —
- * override the window.
+/*
+ * `dailyVerdict()` used to live here: one verdict for a whole day, drawn from
+ * day-level aggregates. It is gone, and deliberately so. The card now splits
+ * every day into 08-12 / 12-16 / 16-20 and judges each window from its own
+ * hours, and a second verdict computed from different inputs could only ever
+ * drift out of step with those - it did, showing a calm day dot above three
+ * windows that all read "ים קצוץ", because the day read `wave_period_max` (the
+ * day's longest, gentlest period) while the windows read the hours. `dayTone()`
+ * answers the same question from the windows themselves. Do not reintroduce a
+ * parallel day-level judgement.
  */
-export function dailyVerdict(day: DailyForecast): Verdict {
-  // `severeCode`, not the headline: the headline is deliberately the condition
-  // that held for most of the day, and an afternoon thunderstorm has to stop
-  // you going out even when the morning was the day's real character.
-  if (day.severeCode >= 95)
-    return { label: "סופת רעמים — לא יוצאים", tone: "poor" };
-  if (day.gustMaxKn >= 30 || (day.waveHeight !== null && day.waveHeight >= 2))
-    return { label: "ים סוער — לא מומלץ", tone: "poor" };
-  if (isChoppy(day.waveHeight, day.wavePeriod))
-    return { label: "ים קצוץ — לא נוח", tone: "caution" };
-
-  const window = calmWindow(day.hours);
-  if (!window) return { label: "משבים לאורך כל היום", tone: "caution" };
-
-  const hours = window.toHour - window.fromHour;
-  if (hours < 3) return { label: "חלון קצר בלבד", tone: "caution" };
-
-  return { label: "יש חלון טוב להפלגה", tone: "good" };
-}

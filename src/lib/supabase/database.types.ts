@@ -346,6 +346,55 @@ export type Database = {
           },
         ]
       }
+      // Hand-written to match supabase/migrations/20260902120000_push_subscriptions.sql.
+      // Everything else in this file comes from `supabase gen types`; this block
+      // does not, because the migration has not been applied to the live project
+      // yet and there is nothing to generate from. Re-run the generator once it
+      // has been, and this entry should come back byte-identical in shape.
+      push_subscriptions: {
+        Row: {
+          auth: string
+          boat_id: string
+          created_at: string
+          endpoint: string
+          expired_at: string | null
+          id: string
+          p256dh: string
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          auth: string
+          boat_id: string
+          created_at?: string
+          endpoint: string
+          expired_at?: string | null
+          id?: string
+          p256dh: string
+          user_agent?: string | null
+          user_id: string
+        }
+        Update: {
+          auth?: string
+          boat_id?: string
+          created_at?: string
+          endpoint?: string
+          expired_at?: string | null
+          id?: string
+          p256dh?: string
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "push_subscriptions_boat_id_fkey"
+            columns: ["boat_id"]
+            isOneToOne: false
+            referencedRelation: "boats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null

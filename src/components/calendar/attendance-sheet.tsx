@@ -2,13 +2,23 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Moon, Share2, Sun, TriangleAlert, X } from "lucide-react";
+import {
+  BellOff,
+  BellRing,
+  Check,
+  Moon,
+  Share2,
+  Sun,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { clearAttendance, setAttendance } from "@/app/actions";
 import { STAY_LABEL, type Attendance, type Stay } from "@/lib/attendance";
 import type { Member } from "@/lib/data";
 import { cn } from "@/lib/cn";
 import { formatLongDate } from "@/lib/format";
-import { attendanceMessage, share } from "@/lib/whatsapp";
+import type { NotifyResult } from "@/lib/push";
+import { attendanceMessage, share as shareSheet } from "@/lib/whatsapp";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ErrorNote } from "@/components/ui/empty-state";
@@ -42,8 +52,42 @@ const STAY_OPTIONS: Array<{ value: Stay; Icon: typeof Sun; hint: string }> = [
 type Saved = {
   stay: Stay | null;
   cancelled: boolean;
+  notify: NotifyResult;
   syncFailed: string | null;
 };
+
+/**
+ * What the partner is told about the notification that just went out — or did
+ * not. The app notifies automatically now; this line exists so "automatically"
+ * never has to be taken on trust.
+ */
+function NotifyLine({ notify }: { notify: NotifyResult }) {
+  if (notify.status === "sent") {
+    return (
+      <p className="flex items-center gap-2 text-xs text-teal-400">
+        <BellRing className="size-3.5 shrink-0" aria-hidden />
+        נשלחה התראה לשותפים
+        {notify.sent > 1 && (
+          <span className="numeric text-ink-subtle">({notify.sent} מכשירים)</span>
+        )}
+      </p>
+    );
+  }
+
+  // "none" and "unavailable" are not failures of this save, but they do mean
+  // nobody's phone buzzed, and saying nothing would imply one did.
+  return (
+    <p
+      className={cn(
+        "flex items-start gap-2 text-xs",
+        notify.status === "failed" ? "text-warning" : "text-ink-subtle",
+      )}
+    >
+      <BellOff className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+      <span>{notify.message ?? "לא נשלחה התראה."}</span>
+    </p>
+  );
+}
 
 export function AttendanceSheet({
   boatId,
@@ -79,8 +123,9 @@ export function AttendanceSheet({
   const dateLabel = formatLongDate(parseDayKey(dateKey));
   const partnerName = me?.name ?? "שותף";
 
-  function notify(nextStay: Stay | null, cancelled: boolean) {
-    void share(
+  /** The optional extra: put it in the group chat too. Not the notification. */
+  function share(nextStay: Stay | null, cancelled: boolean) {
+    void shareSheet(
       attendanceMessage(boatName, {
         partnerName,
         stayLabel: nextStay ? STAY_LABEL[nextStay] : "",
@@ -95,12 +140,7 @@ export function AttendanceSheet({
     setError(null);
 
     startTransition(async () => {
-      const result = await setAttendance({
-        boatId,
-        dateKey,
-        stay,
-        partnerName,
-      });
+      const result = await setAttendance({ boatId, dateKey, stay });
 
       if (!result.ok) {
         setError(result.error);
@@ -111,6 +151,7 @@ export function AttendanceSheet({
       setSaved({
         stay,
         cancelled: false,
+        notify: result.notify,
         syncFailed: result.sync.status === "failed" ? (result.sync.message ?? "") : null,
       });
     });
@@ -131,6 +172,7 @@ export function AttendanceSheet({
       setSaved({
         stay: null,
         cancelled: true,
+        notify: result.notify,
         syncFailed: result.sync.status === "failed" ? (result.sync.message ?? "") : null,
       });
     });
@@ -171,6 +213,10 @@ export function AttendanceSheet({
             </div>
           </div>
 
+          {/* The notification is the app's job and it reports on itself, so
+              "the others were told" never has to be assumed. */}
+          <NotifyLine notify={saved.notify} />
+
           {/* Sync is a separate fact from the save, and it is said out loud.
               Silence here would be the app claiming a calendar entry exists. */}
           {saved.syncFailed && (
@@ -184,22 +230,21 @@ export function AttendanceSheet({
               </span>
             </p>
           )}
-
-          <p className="text-xs text-ink-subtle">
-            השותפים רואים את השינוי באפליקציה. שליחת הודעה לקבוצה:
-          </p>
         </div>
 
         <div className="mt-4 flex gap-2">
+          <Button block onClick={onClose}>
+            סגירה
+          </Button>
+          {/* Secondary, and optional: the crew are already notified. This is
+              for when somebody wants it in the group chat as well. */}
           <Button
+            variant="secondary"
             block
-            onClick={() => notify(saved.stay, saved.cancelled)}
+            onClick={() => share(saved.stay, saved.cancelled)}
             icon={<Share2 className="size-4" aria-hidden />}
           >
-            עדכון השותפים
-          </Button>
-          <Button variant="secondary" block onClick={onClose}>
-            סגירה
+            שיתוף בצ׳אט
           </Button>
         </div>
       </Sheet>
