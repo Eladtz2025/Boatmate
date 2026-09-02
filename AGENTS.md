@@ -64,6 +64,10 @@ npx supabase gen types typescript --project-id <ref> --schema public
 | `src/lib/tz.ts` | Israel wall-clock ↔ instant. Everything date-keyed goes through it |
 | `src/lib/google-calendar.ts` | Optional attendance sync to one shared Google calendar |
 | `src/lib/push.ts` | Web Push — the boat's automatic notifications |
+| `src/lib/invoice-one.ts` | Reading an Invoice One document. Pure, and refuses on doubt |
+| `src/lib/invoice-rules.ts` | Which partner an invoice belongs to, and at which figure |
+| `src/lib/invoice-import.ts` | Gmail → expense, once. The claim-then-create sequence |
+| `src/lib/gmail.ts`, `src/lib/google-oauth.ts` | The connected mailbox, and the OAuth dance |
 | `supabase/migrations/` | Schema, RLS policies, storage buckets |
 | `supabase/scripts/` | One-off operational SQL. Run by hand, never by `db push` |
 
@@ -375,6 +379,57 @@ Three things about it are load-bearing:
   a 200 response over an event nobody can see, which is the worst possible
   shape for a sync failure. `google-calendar.test.ts` pins this, along with
   "an edit is a PUT to the same id" and "a cancel is a DELETE of it".
+
+**The Gmail invoice import must refuse more readily than it imports.** These
+documents become expenses with **no approval step**, against money split
+between partners, so the whole design is built around declining:
+
+- `parseInvoiceDocument()` anchors every field on a Hebrew label, never on
+  position, and then **checks the document against itself** — net plus VAT has
+  to equal the printed total, and the implied rate has to look like VAT at all.
+  A parser that latched onto a line item instead of a summary row will not
+  produce three numbers that agree, so it stops there. That self-check is what
+  makes an unattended parser safe; do not weaken it to make a stubborn document
+  import.
+- `decideInvoiceExpense()` refuses a customer matching neither partner, both
+  partners, or no crew member. **Nir is billed net of VAT and Elad at the full
+  total** — an asymmetry about how the two of them account for the boat, which
+  is why it is written down rather than derived. Partners are matched by *name*
+  against `boat_members` at run time; no UUID appears in that file.
+- Hebrew binds its conjunction to the next word, so "ניר ואלעד" is two words
+  only one of which looks like a name. Without `HEBREW_PREFIXES` that invoice
+  would have been billed entirely to Nir, at the net figure, silently. A test
+  caught it; keep the prefixes.
+
+**The import claims before it creates.** `invoice_imports` gets the row first,
+then the expense, then the expense id is written back — and the claim is
+*deleted* if the expense could not be created, so a genuine failure can be
+retried while a success can never be repeated. Reversing that order would
+double-charge the boat whenever the recording failed. Two unique constraints,
+because there are two ways to see the same invoice twice: the Gmail message id,
+and the invoice number for a resend that arrives as a different message.
+
+**Every sync re-reads the whole window from `BACKFILL_FROM`.** Not a moving
+cursor: a cursor is only correct if mail never arrives late or out of order,
+and it loses anything that does. The window is bounded and the sender filter
+makes it tiny; `invoice_imports` is what decides which of those messages are
+new. The historical backfill is therefore not a special first run — it is the
+ordinary behaviour, and it is idempotent for the same reason every later sync
+is.
+
+**The refresh token is the most sensitive row in the schema.**
+`google_credentials` has RLS enabled with **no policies at all**, so
+`authenticated` can do nothing with it and the only way in is the service role.
+Every access goes through `createAdminClient()`. It reaches outside this app
+entirely, unlike anything about money, and it must never become readable from a
+browser. Do not "fix" the missing policies.
+
+**The document fetch leaves our network, so the host is allowlisted twice.**
+`extractViewerUrl()` filters anchors, and `fetchInvoiceDocument()` re-checks on
+every redirect hop — an email body is untrusted input and a redirect can point
+somewhere the first check never saw. Charset is read from the response, because
+Israeli document pages are still sometimes windows-1255 and decoding those as
+UTF-8 turns every Hebrew label into replacement characters.
 
 **Storage is private.** Buckets `receipts`, `documents`, `media`. Object paths
 are always `{boat_id}/...` — the first path segment is what the storage policies

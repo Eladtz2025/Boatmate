@@ -346,6 +346,113 @@ export type Database = {
           },
         ]
       }
+      // Hand-written to match supabase/migrations/20260902130000_gmail_invoice_import.sql,
+      // for the same reason push_subscriptions is: the migration has not been
+      // applied to the live project yet, so there is nothing to generate from.
+      google_credentials: {
+        Row: {
+          boat_id: string
+          connected_by: string | null
+          created_at: string
+          google_email: string | null
+          id: string
+          refresh_token: string
+          scope: string
+          updated_at: string
+        }
+        Insert: {
+          boat_id: string
+          connected_by?: string | null
+          created_at?: string
+          google_email?: string | null
+          id?: string
+          refresh_token: string
+          scope: string
+          updated_at?: string
+        }
+        Update: {
+          boat_id?: string
+          connected_by?: string | null
+          created_at?: string
+          google_email?: string | null
+          id?: string
+          refresh_token?: string
+          scope?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "google_credentials_boat_id_fkey"
+            columns: ["boat_id"]
+            isOneToOne: true
+            referencedRelation: "boats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      invoice_imports: {
+        Row: {
+          boat_id: string
+          customer_name: string | null
+          expense_id: string | null
+          gmail_message_id: string
+          id: string
+          imported_at: string
+          imported_by: string | null
+          invoice_date: string | null
+          invoice_number: string | null
+          net_agorot: number | null
+          reason: string | null
+          status: string
+          total_agorot: number | null
+        }
+        Insert: {
+          boat_id: string
+          customer_name?: string | null
+          expense_id?: string | null
+          gmail_message_id: string
+          id?: string
+          imported_at?: string
+          imported_by?: string | null
+          invoice_date?: string | null
+          invoice_number?: string | null
+          net_agorot?: number | null
+          reason?: string | null
+          status?: string
+          total_agorot?: number | null
+        }
+        Update: {
+          boat_id?: string
+          customer_name?: string | null
+          expense_id?: string | null
+          gmail_message_id?: string
+          id?: string
+          imported_at?: string
+          imported_by?: string | null
+          invoice_date?: string | null
+          invoice_number?: string | null
+          net_agorot?: number | null
+          reason?: string | null
+          status?: string
+          total_agorot?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoice_imports_boat_id_fkey"
+            columns: ["boat_id"]
+            isOneToOne: false
+            referencedRelation: "boats"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invoice_imports_expense_id_fkey"
+            columns: ["expense_id"]
+            isOneToOne: false
+            referencedRelation: "expenses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       // Hand-written to match supabase/migrations/20260902120000_push_subscriptions.sql.
       // Everything else in this file comes from `supabase gen types`; this block
       // does not, because the migration has not been applied to the live project

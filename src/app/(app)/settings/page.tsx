@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { CalendarCheck, CalendarX, ChevronRight, LogOut } from "lucide-react";
 import Link from "next/link";
 import { signOut } from "@/app/actions";
@@ -7,8 +8,11 @@ import { Button } from "@/components/ui/button";
 import { BoatSettingsForm } from "@/components/settings/boat-settings-form";
 import { CrewManager } from "@/components/settings/crew-manager";
 import { NotificationsCard } from "@/components/settings/notifications-card";
+import { GmailCard } from "@/components/settings/gmail-card";
 import { getBoat, getCurrentUser, getMembers } from "@/lib/data";
 import { isGoogleCalendarConfigured } from "@/lib/google-calendar";
+import { isGmailConfigured } from "@/lib/google-oauth";
+import { getGmailConnection } from "@/lib/gmail";
 
 export const metadata = { title: "הגדרות — Boatmate" };
 
@@ -18,6 +22,10 @@ export default async function SettingsPage() {
 
   const [members, user] = await Promise.all([getMembers(boat.id), getCurrentUser()]);
   const googleConnected = isGoogleCalendarConfigured();
+  const gmailConfigured = isGmailConfigured();
+  // Reads the credential row through the service role and returns only whether
+  // there is one — the refresh token itself never crosses into a component.
+  const gmail = await getGmailConnection(boat.id);
 
   return (
     <main className="flex-1 pb-24">
@@ -58,6 +66,21 @@ export default async function SettingsPage() {
             boatId={boat.id}
             vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? ""}
           />
+        </Card>
+
+        {/* The mailbox invoices arrive in. Connect/disconnect only — the sync
+            itself lives on the finances screen, where the expenses land. */}
+        <Card>
+          <CardTitle>ייבוא חשבוניות מ-Gmail</CardTitle>
+          <Suspense fallback={<p className="text-sm text-ink-subtle">טוען…</p>}>
+            <GmailCard
+              boatId={boat.id}
+              connected={gmail.connected}
+              email={gmail.email}
+              problem={gmail.problem}
+              configured={gmailConfigured}
+            />
+          </Suspense>
         </Card>
 
         {/* Attendance sync. Said plainly either way: a partner who thinks the

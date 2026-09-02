@@ -18,6 +18,10 @@ import {
   type SyncResult,
 } from "@/lib/google-calendar";
 import { notifyBoat, type NotifyResult } from "@/lib/push";
+import { authorizeUrl, isGmailConfigured } from "@/lib/google-oauth";
+import { deleteGmailCredential } from "@/lib/gmail";
+import { syncInvoices } from "@/lib/invoice-import";
+import { summariseSync } from "@/lib/invoice-summary";
 import { formatLongDate } from "@/lib/format";
 import { topUpOccurrences } from "@/lib/recurring";
 import { BUCKETS } from "@/lib/constants";
@@ -872,6 +876,99 @@ export async function deleteTask(id: string): Promise<ActionResult> {
   if (error) return fail(error.message);
   refresh("/");
   return ok();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Gmail invoice import                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Start the Google consent flow.
+ *
+ * Returns the URL rather than redirecting, so the browser navigates from a real
+ * user gesture. `state` carries the boat id and the callback refuses a consent
+ * that comes back for a different one.
+ */
+export async function startGmailConnect(
+  boatId: string,
+): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  if (!isGmailConfigured()) {
+    return {
+      ok: false,
+      error: "חיבור Gmail לא מוגדר בשרת (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET).",
+    };
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "צריך להתחבר מחדש" };
+
+  // Membership check: the consent binds a mailbox to this boat, so only its
+  // crew may start one.
+  const { data: member } = await supabase
+    .from("boat_members")
+    .select("user_id")
+    .eq("boat_id", boatId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!member) return { ok: false, error: "אין הרשאה לסירה הזו" };
+
+  const url = authorizeUrl(boatId);
+  if (!url) return { ok: false, error: "חיבור Gmail לא מוגדר בשרת." };
+
+  return { ok: true, url };
+}
+
+/** Forget the mailbox. The token row goes; imported expenses stay. */
+export async function disconnectGmail(boatId: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return fail("צריך להתחבר מחדש");
+
+  const { data: member } = await supabase
+    .from("boat_members")
+    .select("user_id")
+    .eq("boat_id", boatId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!member) return fail("אין הרשאה לסירה הזו");
+
+  await deleteGmailCredential(boatId);
+  refresh("/settings", "/finances");
+  return ok();
+}
+
+export type InvoiceSyncResult =
+  | { ok: true; message: string; imported: number; skipped: number }
+  | { ok: false; error: string };
+
+/**
+ * Read the mailbox and import whatever is new.
+ *
+ * Every sync re-reads the whole window from the backfill date; what makes it
+ * cheap on the second run is that already-imported messages are skipped, not
+ * that the search is narrowed. See lib/invoice-import.ts.
+ */
+export async function syncInvoicesAction(boatId: string): Promise<InvoiceSyncResult> {
+  const result = await syncInvoices(boatId);
+  if (!result.ok) return { ok: false, error: result.error };
+
+  // Balances move when an expense lands, so the finance screens and the home
+  // tile both need re-reading.
+  if (result.imported > 0) refresh("/", "/finances");
+
+  return {
+    ok: true,
+    message: summariseSync(result),
+    imported: result.imported,
+    skipped: result.skipped,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

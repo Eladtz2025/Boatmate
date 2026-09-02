@@ -106,6 +106,7 @@ export function ExpensesTab({
                         {expense.source === "recurring" && (
                           <Badge tone="teal">קבוע</Badge>
                         )}
+                        {expense.source === "gmail" && <Badge>מייל</Badge>}
                       </p>
                     </div>
 

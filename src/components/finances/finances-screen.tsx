@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { Segmented } from "@/components/ui/chips";
+import { InvoiceSync } from "./invoice-sync";
 import { NewExpenseSheet } from "./new-expense-sheet";
 import { OverviewTab } from "./overview-tab";
 import { ExpensesTab } from "./expenses-tab";
@@ -84,12 +85,17 @@ export function FinancesScreen({
       )}
 
       {tab === "expenses" && (
-        <ExpensesTab
-          expenses={expenses}
-          members={members}
-          boatName={boatName}
-          onNewExpense={openExpenseSheet}
-        />
+        <div className="space-y-3">
+          {/* Sits with the expenses, because that is where an imported invoice
+              shows up. Nothing else on the screen changes when it runs. */}
+          <InvoiceSync boatId={boatId} />
+          <ExpensesTab
+            expenses={expenses}
+            members={members}
+            boatName={boatName}
+            onNewExpense={openExpenseSheet}
+          />
+        </div>
       )}
 
       {tab === "transfers" && (
