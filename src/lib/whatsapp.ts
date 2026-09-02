@@ -148,7 +148,8 @@ export function attendanceMessage(
   boatName: string,
   input: {
     partnerName: string;
-    stayLabel: string;
+    /** "בוקר · לינה" — which parts of the day. Empty on a cancellation. */
+    segmentsLabel: string;
     dateLabel: string;
     cancelled?: boolean;
   },
@@ -158,6 +159,6 @@ export function attendanceMessage(
     : `⚓ ${input.partnerName} מגיע/ה לסירה`;
 
   const lines = [`*${boatName}*`, "", headline, input.dateLabel];
-  if (!input.cancelled) lines.push(input.stayLabel);
+  if (!input.cancelled) lines.push(input.segmentsLabel);
   return lines.join("\n");
 }

@@ -1,17 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Moon, Sun } from "lucide-react";
+import { useEffect, useMemo, useRef } from "react";
 import type { Member } from "@/lib/data";
-import {
-  STAY_LABEL,
-  groupByDate,
-  type Attendance,
-  type Stay,
-} from "@/lib/attendance";
+import { segmentsLabel, type Attendance } from "@/lib/attendance";
 import { cn } from "@/lib/cn";
 import { HEBREW_WEEKDAYS, parseDayKey } from "./date-utils";
-import { AttendanceSheet } from "./attendance-sheet";
+import { SegmentMarks } from "./segment-marks";
 
 /**
  * "Who is coming to the boat, and when?" — the calendar's front door.
@@ -19,7 +13,11 @@ import { AttendanceSheet } from "./attendance-sheet";
  * A rolling three-week strip rather than a month grid, because the question is
  * always about the next couple of weekends and a grid makes you navigate to
  * ask it. Everything a day says is on the card: the weekday, the date, who is
- * coming and whether they are sleeping over.
+ * coming and which parts of the day they have taken.
+ *
+ * Selection state and the editor itself live in `CalendarTabs`, one level up,
+ * so that tapping a day here and tapping the same day in the list below open
+ * the *same* sheet in the same state. This component only reports the tap.
  *
  * The strip scrolls horizontally under `dir="rtl"`, so it never reads
  * `scrollLeft` — that counts *down* from zero here and browsers have
@@ -28,67 +26,49 @@ import { AttendanceSheet } from "./attendance-sheet";
  * direction on its own.
  */
 
-const STAY_ICON: Record<Stay, typeof Sun> = {
-  day: Sun,
-  overnight: Moon,
-};
-
-/** One attendee on a day card: who, and day or night. */
+/** One attendee on a day card: who, and which parts of the day. */
 function AttendeeChip({
   name,
   color,
-  stay,
+  segments,
 }: {
   name: string;
   color?: string | null;
-  stay: Stay;
+  segments: Attendance["segments"];
 }) {
-  const Icon = STAY_ICON[stay];
-
   return (
     <span
       className="flex items-center justify-center gap-0.5"
-      title={`${name} — ${STAY_LABEL[stay]}`}
+      title={`${name} — ${segmentsLabel(segments)}`}
     >
       <span
         style={color ? { backgroundColor: `${color}33`, color } : undefined}
-        className="flex size-4 items-center justify-center rounded-full bg-teal-400/20 text-[9px] font-bold text-teal-400"
+        className="flex size-4 shrink-0 items-center justify-center rounded-full bg-teal-400/20 text-[9px] font-bold text-teal-400"
       >
         {name.trim().slice(0, 1) || "?"}
       </span>
-      <Icon
-        className={cn(
-          "size-2.5 shrink-0",
-          stay === "overnight" ? "text-ink-muted" : "text-warning",
-        )}
-        aria-hidden
-      />
+      <SegmentMarks segments={segments} iconClassName="size-2.5" />
     </span>
   );
 }
 
 export function AttendanceStrip({
-  boatId,
-  boatName,
   members,
-  currentUserId,
-  attendance,
+  byDate,
   dates,
   todayKey,
+  onSelectDate,
 }: {
-  boatId: string;
-  boatName: string;
   members: Member[];
-  currentUserId: string;
-  attendance: Attendance[];
+  /** Israel calendar date → who is on the boat that day. */
+  byDate: Map<string, Attendance[]>;
   /** Israel calendar days, today first. Built on the server. */
   dates: string[];
   todayKey: string;
+  onSelectDate: (dateKey: string) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const [openKey, setOpenKey] = useState<string | null>(null);
 
-  const byDate = useMemo(() => groupByDate(attendance), [attendance]);
   const nameOf = useMemo(
     () => new Map(members.map((member) => [member.userId, member])),
     [members],
@@ -120,7 +100,7 @@ export function AttendanceStrip({
             <button
               key={dateKey}
               type="button"
-              onClick={() => setOpenKey(dateKey)}
+              onClick={() => onSelectDate(dateKey)}
               aria-label={`${dateKey} — ${
                 people.length > 0 ? `${people.length} מגיעים` : "אף אחד לא מגיע"
               }`}
@@ -160,7 +140,7 @@ export function AttendanceStrip({
                           key={row.eventId}
                           name={member?.name ?? "שותף"}
                           color={member?.color}
-                          stay={row.stay}
+                          segments={row.segments}
                         />
                       );
                     })}
@@ -176,18 +156,6 @@ export function AttendanceStrip({
           );
         })}
       </div>
-
-      {openKey && (
-        <AttendanceSheet
-          boatId={boatId}
-          boatName={boatName}
-          dateKey={openKey}
-          members={members}
-          currentUserId={currentUserId}
-          attendance={byDate.get(openKey) ?? []}
-          onClose={() => setOpenKey(null)}
-        />
-      )}
     </section>
   );
 }

@@ -85,6 +85,24 @@ export function zonedDateKey(
   return new Intl.DateTimeFormat("en-CA", { timeZone }).format(instant);
 }
 
+/** An instant → the hour of the clock it lands on in the zone, 0–23. */
+export function zonedHour(
+  value: Date | string,
+  timeZone: string = ISRAEL_TZ,
+): number {
+  const instant = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(instant.getTime())) return 0;
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      hour12: false,
+      timeZone,
+    }).format(instant),
+  );
+  // Some engines report midnight as 24.
+  return hour % 24;
+}
+
 /** Today's calendar date in the zone. */
 export const todayKey = (
   now: Date = new Date(),

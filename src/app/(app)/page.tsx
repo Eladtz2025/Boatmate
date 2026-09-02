@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { ChevronLeft, Moon, ReceiptText, Sun, Users } from "lucide-react";
+import { ChevronLeft, ReceiptText, Users } from "lucide-react";
 import { AppHeader } from "@/components/nav/app-header";
 import { BoatHero } from "@/components/home/boat-hero";
 import {
@@ -11,10 +11,10 @@ import { ChecklistCard } from "@/components/home/checklist-card";
 import { GalleryTrigger, PhotoGallery } from "@/components/home/photo-gallery";
 import { Card, TileLabel } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
-import { STAY_LABEL, STRIP_DAYS } from "@/lib/attendance";
+import { SegmentMarks } from "@/components/calendar/segment-marks";
+import { STRIP_DAYS, segmentsLabel } from "@/lib/attendance";
 import { addDaysToKey, todayKey } from "@/lib/tz";
 import { formatDayMonth, daysUntil } from "@/lib/format";
-import { cn } from "@/lib/cn";
 import {
   getAttendance,
   getBoat,
@@ -105,7 +105,6 @@ export default async function HomePage() {
                 <ul className="space-y-2">
                   {nextArrivals.map((row) => {
                     const member = nameOf.get(row.userId);
-                    const Icon = row.stay === "overnight" ? Moon : Sun;
 
                     return (
                       <li key={row.eventId} className="flex items-center gap-2.5">
@@ -117,17 +116,15 @@ export default async function HomePage() {
                         <span className="min-w-0 flex-1 truncate text-sm text-ink">
                           {member?.name ?? "שותף"}
                         </span>
+                        <span className="truncate text-xs text-ink-subtle">
+                          {segmentsLabel(row.segments)}
+                        </span>
                         <span className="numeric shrink-0 text-xs text-ink-muted">
                           {formatDayMonth(row.dateKey)}
                         </span>
-                        <Icon
-                          className={cn(
-                            "size-3.5 shrink-0",
-                            row.stay === "overnight"
-                              ? "text-ink-muted"
-                              : "text-warning",
-                          )}
-                          aria-label={STAY_LABEL[row.stay]}
+                        <SegmentMarks
+                          segments={row.segments}
+                          iconClassName="size-3.5"
                         />
                       </li>
                     );

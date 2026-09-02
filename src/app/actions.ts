@@ -5,10 +5,12 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { splitEqual, splitByPercent } from "@/lib/balance";
 import {
-  STAY_LABEL,
   attendanceWindow,
   dayRange,
-  type Stay,
+  segmentsLabel,
+  segmentsNote,
+  sortSegments,
+  type Segment,
 } from "@/lib/attendance";
 import {
   deleteGoogleEvent,
@@ -588,7 +590,7 @@ function attendanceNotice(input: {
   boatName: string;
   partnerName: string;
   dateKey: string;
-  stay: Stay | null;
+  segments: Segment[];
   cancelled: boolean;
 }): Promise<NotifyResult> {
   const when = formatLongDate(input.dateKey);
@@ -600,7 +602,7 @@ function attendanceNotice(input: {
       title: input.boatName,
       body: input.cancelled
         ? `${input.partnerName} ביטל/ה הגעה — ${when}`
-        : `${input.partnerName} מגיע/ה לסירה — ${when}, ${STAY_LABEL[input.stay ?? "day"]}`,
+        : `${input.partnerName} מגיע/ה לסירה — ${when}, ${segmentsLabel(input.segments)}`,
       url: "/calendar",
       tag: `attendance:${input.actorId ?? "unknown"}:${input.dateKey}`,
     },
@@ -657,10 +659,16 @@ async function identify(
 export async function setAttendance(input: {
   boatId: string;
   dateKey: string;
-  stay: Stay;
+  /** Which parts of the day. At least one; order does not matter. */
+  segments: Segment[];
   /** Whose attendance. Defaults to the caller. */
   userId?: string;
 }): Promise<AttendanceResult> {
+  const segments = sortSegments(input.segments ?? []);
+  if (segments.length === 0) {
+    return failAttendance("צריך לבחור לפחות חלק אחד מהיום");
+  }
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -670,7 +678,7 @@ export async function setAttendance(input: {
   if (!userId) return failAttendance("צריך להתחבר מחדש");
 
   const { partnerName, boatName } = await identify(supabase, input.boatId, userId);
-  const { startsAt, endsAt } = attendanceWindow(input.dateKey, input.stay);
+  const { startsAt, endsAt } = attendanceWindow(input.dateKey, segments);
   const { from, to } = dayRange(input.dateKey);
 
   const { data: existing, error: readError } = await supabase
@@ -692,6 +700,10 @@ export async function setAttendance(input: {
     starts_at: startsAt,
     ends_at: endsAt,
     all_day: false,
+    // The exact selection, because the two ends cannot always carry it — see
+    // lib/attendance.ts. Overwritten on every save, so an edit never leaves a
+    // stale marker behind the new times.
+    notes: segmentsNote(segments),
     user_id: userId,
     created_by: user?.id ?? null,
   };
@@ -731,12 +743,12 @@ export async function setAttendance(input: {
       boatName,
       partnerName,
       dateKey: input.dateKey,
-      stay: input.stay,
+      segments,
       cancelled: false,
     }),
     upsertGoogleEvent({
       eventId,
-      summary: `${partnerName} — ${STAY_LABEL[input.stay]}`,
+      summary: `${partnerName} — ${segmentsLabel(segments)}`,
       description: "נקבע ב-Boatmate",
       startsAt,
       endsAt,
@@ -803,7 +815,7 @@ export async function clearAttendance(input: {
     boatName,
     partnerName,
     dateKey: input.dateKey,
-    stay: null,
+    segments: [],
     cancelled: true,
   });
 

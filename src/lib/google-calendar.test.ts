@@ -1,11 +1,13 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { attendanceWindow, segmentsLabel, type Segment } from "./attendance";
 import {
   deleteGoogleEvent,
   googleEventId,
   isGoogleCalendarConfigured,
   upsertGoogleEvent,
 } from "./google-calendar";
+import { zonedDateKey, zonedHour } from "./tz";
 
 /**
  * The Google leg, exercised against a stubbed transport.
@@ -209,5 +211,112 @@ describe("without credentials", () => {
     expect((await upsertGoogleEvent(event)).status).toBe("off");
     expect((await deleteGoogleEvent(event.eventId)).status).toBe("off");
     expect(calls).toHaveLength(0);
+  });
+});
+
+/**
+ * What the crew's shared calendar ends up showing.
+ *
+ * The two instants handed to Google are the same two written to the events
+ * row — `setAttendance` computes them once — so pinning them here pins what
+ * lands in the calendar. Each selection must arrive as **one** interval with
+ * the right ends; a run that leaked out as two events, or with the night
+ * stopping at midnight, would be wrong in the calendar even though Boatmate
+ * looked right.
+ */
+describe("attendance windows as Google sees them", () => {
+  const DAY = "2026-09-05";
+  const NEXT = "2026-09-06";
+
+  async function sent(segments: Segment[]) {
+    calls = [];
+    responses = [200];
+    const { startsAt, endsAt } = attendanceWindow(DAY, segments);
+
+    const result = await upsertGoogleEvent({
+      eventId: "a8c29212-281a-49ff-b2e1-46ee976f5e8d",
+      summary: `אלעד — ${segmentsLabel(segments)}`,
+      startsAt,
+      endsAt,
+    });
+    expect(result.status).toBe("ok");
+
+    const body = calls[0].body as {
+      summary: string;
+      start: { dateTime: string };
+      end: { dateTime: string };
+    };
+    return {
+      calls: calls.length,
+      summary: body.summary,
+      from: `${zonedDateKey(body.start.dateTime)} ${zonedHour(body.start.dateTime)}`,
+      to: `${zonedDateKey(body.end.dateTime)} ${zonedHour(body.end.dateTime)}`,
+    };
+  }
+
+  it("sends בוקר as 08:00-12:00 on the day", async () => {
+    const event = await sent(["morning"]);
+    expect(event).toMatchObject({ calls: 1, from: `${DAY} 8`, to: `${DAY} 12` });
+    expect(event.summary).toContain("בוקר");
+  });
+
+  it("sends צהריים as 12:00-20:00 on the day", async () => {
+    expect(await sent(["noon"])).toMatchObject({
+      calls: 1,
+      from: `${DAY} 12`,
+      to: `${DAY} 20`,
+    });
+  });
+
+  it("sends לינה as 20:00 through to 08:00 the next morning", async () => {
+    // Not "to midnight" — a night on the boat ends when you get off it.
+    expect(await sent(["night"])).toMatchObject({
+      calls: 1,
+      from: `${DAY} 20`,
+      to: `${NEXT} 8`,
+    });
+  });
+
+  it("sends בוקר + צהריים as one 08:00-20:00 event", async () => {
+    expect(await sent(["morning", "noon"])).toMatchObject({
+      calls: 1,
+      from: `${DAY} 8`,
+      to: `${DAY} 20`,
+    });
+  });
+
+  it("sends צהריים + לינה as one event running past midnight", async () => {
+    expect(await sent(["noon", "night"])).toMatchObject({
+      calls: 1,
+      from: `${DAY} 12`,
+      to: `${NEXT} 8`,
+    });
+  });
+
+  it("sends all three as one full 24 hours", async () => {
+    const event = await sent(["morning", "noon", "night"]);
+    expect(event).toMatchObject({ calls: 1, from: `${DAY} 8`, to: `${NEXT} 8` });
+    expect(event.summary).toBe("אלעד — בוקר · צהריים · לינה");
+  });
+
+  it("changing the selection updates that same event, never adds one", async () => {
+    calls = [];
+    responses = [200, 200];
+
+    for (const segments of [["morning"], ["noon", "night"]] as Segment[][]) {
+      const { startsAt, endsAt } = attendanceWindow(DAY, segments);
+      await upsertGoogleEvent({
+        eventId: "a8c29212-281a-49ff-b2e1-46ee976f5e8d",
+        summary: `אלעד — ${segmentsLabel(segments)}`,
+        startsAt,
+        endsAt,
+      });
+    }
+
+    expect(calls.map((call) => call.method)).toEqual(["PUT", "PUT"]);
+    expect(new Set(calls.map((call) => call.url)).size).toBe(1);
+
+    const latest = calls[1].body as { end: { dateTime: string } };
+    expect(zonedDateKey(latest.end.dateTime)).toBe(NEXT);
   });
 });

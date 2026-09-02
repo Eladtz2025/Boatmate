@@ -6,14 +6,20 @@ import {
   BellOff,
   BellRing,
   Check,
-  Moon,
   Share2,
-  Sun,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { clearAttendance, setAttendance } from "@/app/actions";
-import { STAY_LABEL, type Attendance, type Stay } from "@/lib/attendance";
+import {
+  SEGMENTS,
+  isContiguous,
+  segmentsLabel,
+  segmentsRangeLabel,
+  sortSegments,
+  type Attendance,
+  type Segment,
+} from "@/lib/attendance";
 import type { Member } from "@/lib/data";
 import { cn } from "@/lib/cn";
 import { formatLongDate } from "@/lib/format";
@@ -24,33 +30,37 @@ import { Button } from "@/components/ui/button";
 import { ErrorNote } from "@/components/ui/empty-state";
 import { Sheet } from "@/components/ui/sheet";
 import { parseDayKey } from "./date-utils";
+import { SegmentIcon, SegmentMarks } from "./segment-marks";
 
 /**
- * Marking attendance: tap a day, tap "מגיע!", pick ליום or לינה, save.
+ * Marking attendance: tap a day, tap "מגיע!", pick the parts of it, save.
+ *
+ * The three segments are **independent toggles, not one choice**. "ליום או
+ * לינה" could not say "I am coming after lunch and staying the night", which
+ * is most of how this boat gets used; any combination is expressible now, and
+ * a run of them is stored as the single continuous interval it describes.
  *
  * The full event form still exists for everything else on the calendar, but it
  * is not on this path — booking a Saturday should not mean filling in a title,
  * a start time, an end time and a location.
  *
- * Two things this screen refuses to be vague about:
+ * Three things this screen refuses to be vague about:
  *
  * - **Editing is not adding.** A partner who already has the day marked lands
- *   straight on their current choice, and saving overwrites it. The action is
- *   idempotent on (boat, partner, day), so there is no path here that produces
- *   two rows for one person on one day.
+ *   straight on their current selection, and saving overwrites it. The action
+ *   is idempotent on (boat, partner, day), so there is no path here that
+ *   produces two rows for one person on one day — and it is reached from both
+ *   the day card and the attendance row, which is why neither owns this state.
+ * - **Notifications report themselves.** The app tells the other partners; the
+ *   line under the tick says whether it managed to.
  * - **Google sync is reported, not assumed.** The save succeeds or fails on
  *   the boat's own record alone; if the calendar leg failed, the panel says so
  *   in as many words instead of showing a tick over a calendar that never got
  *   the event.
  */
 
-const STAY_OPTIONS: Array<{ value: Stay; Icon: typeof Sun; hint: string }> = [
-  { value: "day", Icon: Sun, hint: "בוקר עד ערב" },
-  { value: "overnight", Icon: Moon, hint: "לישון על הסירה" },
-];
-
 type Saved = {
-  stay: Stay | null;
+  segments: Segment[];
   cancelled: boolean;
   notify: NotifyResult;
   syncFailed: string | null;
@@ -115,20 +125,28 @@ export function AttendanceSheet({
   const mine = attendance.find((row) => row.userId === currentUserId) ?? null;
   const others = attendance.filter((row) => row.userId !== currentUserId);
 
-  // Someone already coming starts on their current answer, so the sheet is an
-  // edit rather than a fresh decision. Everyone else starts on "מגיע!".
+  // Someone already coming starts on their current selection, so the sheet is
+  // an edit rather than a fresh decision. Everyone else starts on "מגיע!".
   const [choosing, setChoosing] = useState(mine !== null);
-  const [stay, setStay] = useState<Stay | null>(mine?.stay ?? null);
+  const [selected, setSelected] = useState<Segment[]>(mine?.segments ?? []);
 
   const dateLabel = formatLongDate(parseDayKey(dateKey));
   const partnerName = me?.name ?? "שותף";
 
+  function toggle(segment: Segment) {
+    setSelected((current) =>
+      current.includes(segment)
+        ? current.filter((key) => key !== segment)
+        : sortSegments([...current, segment]),
+    );
+  }
+
   /** The optional extra: put it in the group chat too. Not the notification. */
-  function share(nextStay: Stay | null, cancelled: boolean) {
+  function share(segments: Segment[], cancelled: boolean) {
     void shareSheet(
       attendanceMessage(boatName, {
         partnerName,
-        stayLabel: nextStay ? STAY_LABEL[nextStay] : "",
+        segmentsLabel: segmentsLabel(segments),
         dateLabel,
         cancelled,
       }),
@@ -136,11 +154,11 @@ export function AttendanceSheet({
   }
 
   function save() {
-    if (!stay) return;
+    if (selected.length === 0) return;
     setError(null);
 
     startTransition(async () => {
-      const result = await setAttendance({ boatId, dateKey, stay });
+      const result = await setAttendance({ boatId, dateKey, segments: selected });
 
       if (!result.ok) {
         setError(result.error);
@@ -149,7 +167,7 @@ export function AttendanceSheet({
 
       router.refresh();
       setSaved({
-        stay,
+        segments: selected,
         cancelled: false,
         notify: result.notify,
         syncFailed: result.sync.status === "failed" ? (result.sync.message ?? "") : null,
@@ -170,7 +188,7 @@ export function AttendanceSheet({
 
       router.refresh();
       setSaved({
-        stay: null,
+        segments: [],
         cancelled: true,
         notify: result.notify,
         syncFailed: result.sync.status === "failed" ? (result.sync.message ?? "") : null,
@@ -179,7 +197,7 @@ export function AttendanceSheet({
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Saved — what happened, and the one tap that tells the others            */
+  /* Saved — what happened, and what the others were told                    */
   /* ---------------------------------------------------------------------- */
 
   if (saved) {
@@ -205,11 +223,20 @@ export function AttendanceSheet({
               <p className="text-sm font-semibold text-ink">
                 {saved.cancelled ? "ההגעה בוטלה" : "נשמר"}
               </p>
-              <p className="text-xs text-ink-muted">
-                {saved.cancelled
-                  ? "השותפים כבר לא רואים אותך ביום הזה"
-                  : `${partnerName} — ${STAY_LABEL[saved.stay ?? "day"]}`}
-              </p>
+              {saved.cancelled ? (
+                <p className="text-xs text-ink-muted">
+                  השותפים כבר לא רואים אותך ביום הזה
+                </p>
+              ) : (
+                <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-ink-muted">
+                  <span>{partnerName} —</span>
+                  <SegmentMarks segments={saved.segments} iconClassName="size-3.5" />
+                  <span>{segmentsLabel(saved.segments)}</span>
+                  <span className="numeric text-ink-subtle">
+                    {segmentsRangeLabel(saved.segments)}
+                  </span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -241,7 +268,7 @@ export function AttendanceSheet({
           <Button
             variant="secondary"
             block
-            onClick={() => share(saved.stay, saved.cancelled)}
+            onClick={() => share(saved.segments, saved.cancelled)}
             icon={<Share2 className="size-4" aria-hidden />}
           >
             שיתוף בצ׳אט
@@ -261,7 +288,7 @@ export function AttendanceSheet({
       onClose={onClose}
       title={dateLabel}
       onConfirm={choosing ? save : undefined}
-      confirmDisabled={!stay}
+      confirmDisabled={selected.length === 0}
       busy={pending}
     >
       <div className="space-y-4">
@@ -277,7 +304,6 @@ export function AttendanceSheet({
             <ul className="space-y-2">
               {[...(mine ? [mine] : []), ...others].map((row) => {
                 const member = members.find((item) => item.userId === row.userId);
-                const Icon = row.stay === "overnight" ? Moon : Sun;
 
                 return (
                   <li
@@ -291,15 +317,9 @@ export function AttendanceSheet({
                         <span className="text-ink-subtle"> (אני)</span>
                       )}
                     </span>
-                    <span className="flex items-center gap-1 text-xs text-ink-muted">
-                      <Icon
-                        className={cn(
-                          "size-3.5",
-                          row.stay === "overnight" ? "text-ink-muted" : "text-warning",
-                        )}
-                        aria-hidden
-                      />
-                      {STAY_LABEL[row.stay]}
+                    <span className="flex shrink-0 items-center gap-1.5 text-xs text-ink-muted">
+                      <SegmentMarks segments={row.segments} iconClassName="size-3.5" />
+                      {segmentsLabel(row.segments)}
                     </span>
                   </li>
                 );
@@ -308,7 +328,7 @@ export function AttendanceSheet({
           )}
         </div>
 
-        {/* Step 2: "מגיע!" — one tap, and only then the two choices. */}
+        {/* Step 2: "מגיע!" — one tap, and only then the parts of the day. */}
         {!choosing ? (
           <Button
             block
@@ -321,45 +341,82 @@ export function AttendanceSheet({
         ) : (
           <div className="space-y-2">
             <p className="text-xs font-medium text-ink-muted">
-              {mine ? "שינוי ההגעה" : "לכמה זמן"}
+              {mine ? "שינוי ההגעה" : "אילו חלקים של היום"}
             </p>
 
-            <div className="grid grid-cols-2 gap-2">
-              {STAY_OPTIONS.map(({ value, Icon, hint }) => {
-                const active = stay === value;
+            <div className="space-y-2">
+              {SEGMENTS.map((segment) => {
+                const active = selected.includes(segment.key);
                 return (
                   <button
-                    key={value}
+                    key={segment.key}
                     type="button"
-                    aria-pressed={active}
-                    onClick={() => setStay(value)}
+                    role="checkbox"
+                    aria-checked={active}
+                    onClick={() => toggle(segment.key)}
                     className={cn(
-                      "flex flex-col items-center gap-1 rounded-2xl border px-3 py-4 transition active:scale-[0.98]",
+                      "flex w-full items-center gap-3 rounded-2xl border px-3.5 py-3 text-start transition active:scale-[0.99]",
                       active
                         ? "border-teal-400 bg-teal-400/10"
                         : "border-[var(--hairline)] bg-hull-800 hover:border-teal-400/30",
                     )}
                   >
-                    <Icon
-                      className={cn(
-                        "size-6",
-                        active ? "text-teal-400" : "text-ink-muted",
-                      )}
-                      aria-hidden
-                    />
+                    {/* A tick box, because these are independent choices and
+                        must not read as one-of-three. */}
                     <span
                       className={cn(
-                        "text-sm",
-                        active ? "font-semibold text-ink" : "text-ink-muted",
+                        "flex size-5 shrink-0 items-center justify-center rounded-md border transition",
+                        active
+                          ? "border-teal-400 bg-teal-400 text-hull-950"
+                          : "border-ink-subtle",
                       )}
                     >
-                      {STAY_LABEL[value]}
+                      {active && <Check className="size-3.5" aria-hidden />}
                     </span>
-                    <span className="text-[11px] text-ink-subtle">{hint}</span>
+
+                    <SegmentIcon
+                      segment={segment.key}
+                      className={cn(
+                        "size-5 shrink-0",
+                        active ? "text-teal-400" : "text-ink-muted",
+                      )}
+                    />
+
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className={cn(
+                          "block text-sm",
+                          active ? "font-semibold text-ink" : "text-ink-muted",
+                        )}
+                      >
+                        {segment.label}
+                      </span>
+                      <span className="numeric block text-[11px] text-ink-subtle">
+                        {segment.clock}
+                      </span>
+                    </span>
                   </button>
                 );
               })}
             </div>
+
+            {/* What the selection adds up to, so the stored interval is never
+                a surprise — including the one case that is not a single run. */}
+            {selected.length > 0 && (
+              <p className="flex flex-wrap items-center gap-x-1.5 pt-0.5 text-[11px] text-ink-muted">
+                <SegmentMarks segments={selected} iconClassName="size-3" />
+                <span className="numeric">{segmentsRangeLabel(selected)}</span>
+                {!isContiguous(selected) && (
+                  <span className="text-ink-subtle">
+                    · ללא {segmentsLabel(
+                      SEGMENTS.map((segment) => segment.key).filter(
+                        (key) => !selected.includes(key),
+                      ),
+                    )}
+                  </span>
+                )}
+              </p>
+            )}
           </div>
         )}
 

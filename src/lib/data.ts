@@ -2,7 +2,7 @@ import "server-only";
 import { cache } from "react";
 import { createClient } from "./supabase/server";
 import { computeBalances, type ExpenseInput, type TransferInput } from "./balance";
-import { dayRange, stayOf, type Attendance } from "./attendance";
+import { dayRange, segmentsOf, type Attendance } from "./attendance";
 import { BUCKETS } from "./constants";
 import { HERO_PHOTO_ID, type GalleryPhoto } from "./gallery";
 import { zonedDateKey } from "./tz";
@@ -460,7 +460,7 @@ export const getAttendance = cache(
     const data = rows(
       await supabase
         .from("events")
-        .select("id, user_id, starts_at, ends_at")
+        .select("id, user_id, starts_at, ends_at, notes")
         .eq("boat_id", boatId)
         .eq("kind", "arrival")
         .not("user_id", "is", null)
@@ -474,7 +474,10 @@ export const getAttendance = cache(
       eventId: row.id,
       userId: row.user_id as string,
       dateKey: zonedDateKey(row.starts_at),
-      stay: stayOf(row.starts_at, row.ends_at),
+      // `notes` carries the exact segments when the row was written by the
+      // attendance flow; without one the two ends are read instead, which is
+      // what keeps rows from before segments existed readable.
+      segments: segmentsOf(row.starts_at, row.ends_at, row.notes),
     }));
   },
 );

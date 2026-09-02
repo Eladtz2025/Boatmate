@@ -99,14 +99,35 @@ fewer future rows but misreports nothing, and must not take a screen down. The
 calendar matters most: its window reaches twelve months forward.
 
 **Attendance is an `events` row, not a table of its own.** `kind = 'arrival'`
-with a `user_id`, and the stay type is **derived from the dates** rather than
-stored in a flag: a day runs 08:00–20:00 Israel time, an overnight 08:00 to
-10:00 the next morning, and anything ending on a later calendar day reads back
-as an overnight. That keeps one answer to "somebody is on the boat that day" —
-the home tile, the calendar agenda and the attendance strip are all reading the
-same rows — and it is why a stay booked through the full event form still shows
-up in the strip. `src/lib/attendance.ts` owns the shape; `attendance.test.ts`
+with a `user_id`. That keeps one answer to "somebody is on the boat that day" —
+the home tile, the calendar agenda and the attendance strip all read the same
+rows — and it is why a stay booked through the full event form still shows up
+in the strip. `src/lib/attendance.ts` owns the shape; `attendance.test.ts`
 covers the round trip through both halves of the DST year.
+
+**A day is three independent segments, not one either/or.** בוקר 08–12,
+צהריים 12–20, לינה 20–08 the next morning (`SEGMENTS`), picked in any
+combination. Each starts where the last ended, so **a run of them is stored as
+one continuous interval** — בוקר+צהריים is a single 08:00–20:00 event, not two.
+The predecessor was "ליום או לינה", which could not say "coming after lunch and
+sleeping over", which is most of how this boat is used.
+
+The selection is recorded in the event's `notes` as
+`boatmate:segments=...`, because the two ends cannot always carry it: בוקר+לינה
+with the afternoon left out spans 08:00 to 08:00 and is indistinguishable from
+all three. One event is one interval, so that selection is *stored* as the span
+and the note is what keeps the truth — the picker prints "ללא צהריים" under it
+rather than pretending. A row **without** a note still reads back sensibly
+(`segmentsOf`), which is what keeps pre-segment attendance working: the old
+08:00–20:00 reads as בוקר+צהריים and the old overnight as all three. Do not
+make the note load-bearing for the common case; the dates must stay readable
+on their own.
+
+**One editor, reached from two places.** The day card in the strip and the
+attendance row beneath it both open the same sheet on the same date, so
+`openKey` and `<AttendanceSheet>` live in `CalendarTabs` rather than inside
+either list — a second editor is how two entry points drift into two different
+edit states.
 
 **There is no unique constraint behind that, so `setAttendance` enforces it.**
 The action looks up the caller's existing arrival on that Israel calendar day
