@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sheet } from "@/components/ui/sheet";
+import { Segmented } from "@/components/ui/chips";
 import { DateInput, MoneyInput, SelectInput, TextArea, TextInput } from "@/components/ui/field";
 import { ErrorNote } from "@/components/ui/empty-state";
 import { createRecurringPayment } from "@/app/actions";
-import { CADENCES, EXPENSE_CATEGORIES } from "@/lib/constants";
+import { CADENCES, EXPENSE_CATEGORIES, RECURRING_KINDS, type RecurringKind } from "@/lib/constants";
 import { parseShekelInput, toDateInput } from "@/lib/format";
 import { MemberChips } from "./member-chips";
 import type { FinanceMember } from "./types";
@@ -24,7 +25,9 @@ export function RecurringSheet({
   currentUserId: string | null;
 }) {
   const router = useRouter();
+  const memberOptions = members.map((m) => ({ value: m.userId, label: m.name }));
 
+  const [kind, setKind] = useState<RecurringKind>("expense");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState<string>(EXPENSE_CATEGORIES[0].value);
   const [amountText, setAmountText] = useState("");
@@ -34,14 +37,23 @@ export function RecurringSheet({
   const [defaultPaidBy, setDefaultPaidBy] = useState<string | null>(
     () => currentUserId ?? members[0]?.userId ?? null,
   );
+  const [fromUser, setFromUser] = useState(
+    () => currentUserId ?? members[0]?.userId ?? "",
+  );
+  const [toUser, setToUser] = useState(
+    () => members.find((m) => m.userId !== (currentUserId ?? members[0]?.userId))?.userId ?? "",
+  );
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const isTransfer = kind === "transfer";
   const amountAgorot = parseShekelInput(amountText) ?? 0;
   const day = Number(dayOfMonth);
   const dayValid = Number.isInteger(day) && day >= 1 && day <= 28;
-  const canConfirm = !busy && title.trim().length > 0 && amountAgorot > 0 && dayValid;
+  const partiesValid = !isTransfer || (!!fromUser && !!toUser && fromUser !== toUser);
+  const canConfirm =
+    !busy && title.trim().length > 0 && amountAgorot > 0 && dayValid && partiesValid;
 
   async function handleConfirm() {
     setBusy(true);
@@ -50,12 +62,17 @@ export function RecurringSheet({
     const result = await createRecurringPayment({
       boatId,
       title: title.trim(),
-      category,
+      kind,
+      // A direct transfer is not a boat cost, so it gets no category of its
+      // own — the column is NOT NULL, and 'other' is what it has always meant.
+      category: isTransfer ? "other" : category,
       amountAgorot,
       cadence,
       dayOfMonth: day,
       startOn,
-      defaultPaidBy,
+      defaultPaidBy: isTransfer ? null : defaultPaidBy,
+      fromUser: isTransfer ? fromUser : null,
+      toUser: isTransfer ? toUser : null,
       notes: notes.trim() || null,
     });
 
@@ -79,19 +96,49 @@ export function RecurringSheet({
       confirmLabel="שמירת הוראת קבע"
     >
       <div className="space-y-4">
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-ink-muted">סוג ההוראה</p>
+          <Segmented options={RECURRING_KINDS} value={kind} onChange={setKind} />
+          <p className="text-xs text-ink-subtle">
+            {isTransfer
+              ? "תשלום ישיר משותף לשותף. לא מתחלק בין השותפים — נרשם כהעברה."
+              : "הוצאה על הסירה, שמתחלקת בין השותפים בעת אישור התשלום."}
+          </p>
+        </div>
+
         <TextInput
           label="שם ההוראה"
-          placeholder="למשל: שכירות חודשית"
+          placeholder={isTransfer ? "למשל: החזר חודשי" : "למשל: שכירות חודשית"}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
 
-        <SelectInput
-          label="קטגוריה"
-          options={EXPENSE_CATEGORIES}
-          value={category}
-          onChange={(event) => setCategory(event.target.value)}
-        />
+        {!isTransfer && (
+          <SelectInput
+            label="קטגוריה"
+            options={EXPENSE_CATEGORIES}
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+          />
+        )}
+
+        {isTransfer && (
+          <>
+            <SelectInput
+              label="מי מעביר"
+              options={memberOptions}
+              value={fromUser}
+              onChange={(event) => setFromUser(event.target.value)}
+            />
+            <SelectInput
+              label="למי"
+              options={memberOptions}
+              value={toUser}
+              onChange={(event) => setToUser(event.target.value)}
+              error={fromUser && fromUser === toUser ? "אי אפשר להעביר לעצמך" : null}
+            />
+          </>
+        )}
 
         <MoneyInput
           label="סכום"
@@ -126,12 +173,16 @@ export function RecurringSheet({
           onChange={(event) => setStartOn(event.target.value)}
         />
 
-        <MemberChips
-          label="משלם כברירת מחדל"
-          members={members}
-          value={defaultPaidBy}
-          onChange={setDefaultPaidBy}
-        />
+        {/* A direct transfer has no payer to choose: whoever is named above
+            pays it, and there is nothing to split. */}
+        {!isTransfer && (
+          <MemberChips
+            label="משלם כברירת מחדל"
+            members={members}
+            value={defaultPaidBy}
+            onChange={setDefaultPaidBy}
+          />
+        )}
 
         <TextArea
           label="הערה (אופציונלי)"

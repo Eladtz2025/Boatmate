@@ -244,14 +244,32 @@ export async function deleteTransfer(id: string): Promise<ActionResult> {
 export async function createRecurringPayment(input: {
   boatId: string;
   title: string;
+  /** 'expense' (default, unchanged) or 'transfer' — a direct payment to a partner. */
+  kind?: string;
   category: string;
   amountAgorot: number;
   cadence: string;
   dayOfMonth: number;
   startOn: string;
   defaultPaidBy?: string | null;
+  fromUser?: string | null;
+  toUser?: string | null;
   notes?: string | null;
 }): Promise<ActionResult> {
+  if (!Number.isInteger(input.amountAgorot) || input.amountAgorot <= 0) {
+    return fail("סכום לא תקין");
+  }
+
+  const kind = input.kind === "transfer" ? "transfer" : "expense";
+  const isTransfer = kind === "transfer";
+
+  // The DB carries the same rule as a check constraint; refusing here is what
+  // turns it into a sentence the crew can read instead of a Postgres error.
+  if (isTransfer) {
+    if (!input.fromUser || !input.toUser) return fail("צריך לבחור מי מעביר ולמי");
+    if (input.fromUser === input.toUser) return fail("אי אפשר להעביר לעצמך");
+  }
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -260,12 +278,18 @@ export async function createRecurringPayment(input: {
   const { error } = await supabase.from("recurring_payments").insert({
     boat_id: input.boatId,
     title: input.title,
+    kind,
     category: input.category,
     amount_agorot: input.amountAgorot,
     cadence: input.cadence,
     day_of_month: input.dayOfMonth,
     start_on: input.startOn,
-    default_paid_by: input.defaultPaidBy ?? null,
+    // A direct transfer is not split and has no payer: whoever is named in
+    // from_user pays it. Leaving these at their defaults would put a stale
+    // split mode on a row that never splits anything.
+    default_paid_by: isTransfer ? null : (input.defaultPaidBy ?? null),
+    from_user: isTransfer ? input.fromUser : null,
+    to_user: isTransfer ? input.toUser : null,
     notes: input.notes ?? null,
     created_by: user?.id ?? null,
   });
@@ -324,6 +348,37 @@ export async function confirmRecurringPayment(input: {
     p_amount_agorot: input.amountAgorot,
     p_paid_on: input.paidOn,
     p_receipt_path: input.receiptPath ?? undefined,
+  });
+
+  if (error) return fail(error.message);
+  refresh("/", "/finances", "/calendar");
+  return ok();
+}
+
+/**
+ * The transfer twin of confirmRecurringPayment: a direct standing order becomes
+ * a row in `transfers` and nothing else — no expense, no shares, no split.
+ *
+ * There is no balance arithmetic here on purpose. The row lands in the same
+ * table a manually recorded settlement lands in, so it moves balances through
+ * the one engine in lib/balance.ts, by the same `− received + sent` terms.
+ */
+export async function confirmRecurringTransfer(input: {
+  occurrenceId: string;
+  amountAgorot: number;
+  paidOn: string;
+  note?: string | null;
+}): Promise<ActionResult> {
+  if (!Number.isInteger(input.amountAgorot) || input.amountAgorot <= 0) {
+    return fail("סכום לא תקין");
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("confirm_recurring_transfer", {
+    p_occurrence_id: input.occurrenceId,
+    p_amount_agorot: input.amountAgorot,
+    p_paid_on: input.paidOn,
+    p_note: input.note ?? undefined,
   });
 
   if (error) return fail(error.message);

@@ -40,6 +40,17 @@ export const CADENCES = [
   { value: "yearly", label: "שנתי" },
 ] as const;
 
+/**
+ * What a standing order actually is. 'expense' is the original behaviour — a
+ * shared boat cost, split between the crew. 'transfer' is one partner paying
+ * another back every month; it is never split, and confirming it writes a
+ * settlement rather than an expense.
+ */
+export const RECURRING_KINDS = [
+  { value: "expense", label: "הוצאה משותפת" },
+  { value: "transfer", label: "ישירות לשותף" },
+] as const;
+
 export const SPLIT_MODES = [
   { value: "equal", label: "שווה" },
   { value: "percent", label: "אחוזים" },
@@ -50,6 +61,7 @@ export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number]["value"];
 export type DocumentCategory = (typeof DOCUMENT_CATEGORIES)[number]["value"];
 export type EventKind = (typeof EVENT_KINDS)[number]["value"];
 export type Cadence = (typeof CADENCES)[number]["value"];
+export type RecurringKind = (typeof RECURRING_KINDS)[number]["value"];
 export type SplitMode = (typeof SPLIT_MODES)[number]["value"];
 
 const labelOf = <T extends readonly { value: string; label: string }[]>(
@@ -61,6 +73,7 @@ export const expenseCategoryLabel = (v: string) => labelOf(EXPENSE_CATEGORIES, v
 export const documentCategoryLabel = (v: string) => labelOf(DOCUMENT_CATEGORIES, v);
 export const eventKindLabel = (v: string) => labelOf(EVENT_KINDS, v);
 export const cadenceLabel = (v: string) => labelOf(CADENCES, v);
+export const recurringKindLabel = (v: string) => labelOf(RECURRING_KINDS, v);
 
 /** Calendar item kinds include two derived kinds that are not real events. */
 export const CALENDAR_KIND_LABEL: Record<string, string> = {

@@ -537,6 +537,7 @@ export type Database = {
           id: string
           recurring_payment_id: string
           status: string
+          transfer_id: string | null
         }
         Insert: {
           amount_agorot: number
@@ -548,6 +549,7 @@ export type Database = {
           id?: string
           recurring_payment_id: string
           status?: string
+          transfer_id?: string | null
         }
         Update: {
           amount_agorot?: number
@@ -559,6 +561,7 @@ export type Database = {
           id?: string
           recurring_payment_id?: string
           status?: string
+          transfer_id?: string | null
         }
         Relationships: [
           {
@@ -582,6 +585,13 @@ export type Database = {
             referencedRelation: "recurring_payments"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "recurring_occurrences_transfer_id_fkey"
+            columns: ["transfer_id"]
+            isOneToOne: true
+            referencedRelation: "transfers"
+            referencedColumns: ["id"]
+          },
         ]
       }
       recurring_payments: {
@@ -597,11 +607,14 @@ export type Database = {
           default_paid_by: string | null
           document_id: string | null
           end_on: string | null
+          from_user: string | null
           id: string
+          kind: string
           notes: string | null
           split_mode: string
           start_on: string
           title: string
+          to_user: string | null
         }
         Insert: {
           active?: boolean
@@ -615,11 +628,14 @@ export type Database = {
           default_paid_by?: string | null
           document_id?: string | null
           end_on?: string | null
+          from_user?: string | null
           id?: string
+          kind?: string
           notes?: string | null
           split_mode?: string
           start_on?: string
           title: string
+          to_user?: string | null
         }
         Update: {
           active?: boolean
@@ -633,11 +649,14 @@ export type Database = {
           default_paid_by?: string | null
           document_id?: string | null
           end_on?: string | null
+          from_user?: string | null
           id?: string
+          kind?: string
           notes?: string | null
           split_mode?: string
           start_on?: string
           title?: string
+          to_user?: string | null
         }
         Relationships: [
           {
@@ -863,6 +882,15 @@ export type Database = {
           p_paid_on?: string
           p_receipt_path?: string
           p_shares: Json
+        }
+        Returns: string
+      }
+      confirm_recurring_transfer: {
+        Args: {
+          p_amount_agorot?: number
+          p_note?: string
+          p_occurrence_id: string
+          p_paid_on?: string
         }
         Returns: string
       }

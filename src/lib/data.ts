@@ -266,6 +266,8 @@ export const getBalances = cache(async (boatId: string) => {
 export type RecurringRow = {
   id: string;
   title: string;
+  /** 'expense' — a shared cost. 'transfer' — one partner paying another back. */
+  kind: string;
   category: string;
   amountAgorot: number;
   cadence: string;
@@ -273,6 +275,9 @@ export type RecurringRow = {
   active: boolean;
   defaultPaidBy: string | null;
   splitMode: string;
+  /** Both null unless kind = 'transfer'; a DB check keeps that true. */
+  fromUser: string | null;
+  toUser: string | null;
 };
 
 export const getRecurringPayments = cache(async (boatId: string): Promise<RecurringRow[]> => {
@@ -280,7 +285,9 @@ export const getRecurringPayments = cache(async (boatId: string): Promise<Recurr
   const data = rows(
     await supabase
       .from("recurring_payments")
-      .select("id, title, category, amount_agorot, cadence, day_of_month, active, default_paid_by, split_mode")
+      .select(
+        "id, title, kind, category, amount_agorot, cadence, day_of_month, active, default_paid_by, split_mode, from_user, to_user",
+      )
       .eq("boat_id", boatId)
       .order("day_of_month"),
     "את ההוראות הקבועות",
@@ -289,6 +296,7 @@ export const getRecurringPayments = cache(async (boatId: string): Promise<Recurr
   return data.map((row) => ({
     id: row.id,
     title: row.title,
+    kind: row.kind,
     category: row.category,
     amountAgorot: row.amount_agorot,
     cadence: row.cadence,
@@ -296,6 +304,8 @@ export const getRecurringPayments = cache(async (boatId: string): Promise<Recurr
     active: row.active,
     defaultPaidBy: row.default_paid_by,
     splitMode: row.split_mode,
+    fromUser: row.from_user,
+    toUser: row.to_user,
   }));
 });
 
@@ -303,11 +313,15 @@ export type OccurrenceRow = {
   id: string;
   recurringPaymentId: string;
   title: string;
+  /** Inherited from the template — it decides which confirm path applies. */
+  kind: string;
   category: string;
   amountAgorot: number;
   dueOn: string;
   status: string;
   defaultPaidBy: string | null;
+  fromUser: string | null;
+  toUser: string | null;
 };
 
 /** Pending occurrences only — these never touch balances until confirmed. */
@@ -318,7 +332,7 @@ export const getUpcomingPayments = cache(
       await supabase
         .from("recurring_occurrences")
         .select(
-          "id, recurring_payment_id, amount_agorot, due_on, status, recurring_payments(title, category, default_paid_by)",
+          "id, recurring_payment_id, amount_agorot, due_on, status, recurring_payments(title, kind, category, default_paid_by, from_user, to_user)",
         )
         .eq("boat_id", boatId)
         .eq("status", "pending")
@@ -330,18 +344,27 @@ export const getUpcomingPayments = cache(
     return data.map((row) => {
       const parent = row.recurring_payments as {
         title: string;
+        kind: string;
         category: string;
         default_paid_by: string | null;
+        from_user: string | null;
+        to_user: string | null;
       } | null;
       return {
         id: row.id,
         recurringPaymentId: row.recurring_payment_id,
         title: parent?.title ?? "תשלום",
+        // Defaulting to 'expense' matches every row written before standing
+        // orders had a kind at all, and keeps the confirm sheet on the path
+        // those rows have always taken.
+        kind: parent?.kind ?? "expense",
         category: parent?.category ?? "other",
         amountAgorot: row.amount_agorot,
         dueOn: row.due_on,
         status: row.status,
         defaultPaidBy: parent?.default_paid_by ?? null,
+        fromUser: parent?.from_user ?? null,
+        toUser: parent?.to_user ?? null,
       };
     });
   },

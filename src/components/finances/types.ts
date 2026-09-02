@@ -41,6 +41,8 @@ export type FinanceTransfer = {
 export type FinanceRecurring = {
   id: string;
   title: string;
+  /** 'expense' — split between the crew. 'transfer' — paid straight to a partner. */
+  kind: string;
   category: string;
   amountAgorot: number;
   cadence: string;
@@ -48,17 +50,22 @@ export type FinanceRecurring = {
   active: boolean;
   defaultPaidBy: string | null;
   splitMode: string;
+  fromUser: string | null;
+  toUser: string | null;
 };
 
 export type FinanceOccurrence = {
   id: string;
   recurringPaymentId: string;
   title: string;
+  kind: string;
   category: string;
   amountAgorot: number;
   dueOn: string;
   status: string;
   defaultPaidBy: string | null;
+  fromUser: string | null;
+  toUser: string | null;
 };
 
 export type FinanceBalance = MemberBalance;
